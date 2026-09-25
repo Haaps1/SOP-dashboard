@@ -27,11 +27,6 @@
   const STATUS_LABEL = { todo: "To Do", in_progress: "In Progress", done: "Done" };
   const EMPTY_ENTRY = Object.freeze({ start_time: null, end_time: null, quantity: null });
 
-  // "HH:MM:SS" (Postgres time) -> "HH:MM" for <input type="time">.
-  function toInputTime(t) {
-    return t ? t.slice(0, 5) : "";
-  }
-
   function toMinutes(t) {
     if (!t) return null;
     const [h, m] = t.split(":").map(Number);
@@ -120,7 +115,13 @@
   //   removeTask(id)                  -> also removes its history
   //   setPositions([{id, position}])  -> reorder tasks
   //   saveEntry(taskId, date, {start_time, end_time, quantity})
+  //   listWorkDates(employee, from, to) -> dates (YYYY-MM-DD) with work started
+  //   listNotes(date)                 -> Promise<[{employee, body}]>
+  //   saveNote(employee, date, body)
   //   subscribe(onChange)             -> called when data changes elsewhere
+  //
+  // Start and end times are write-once: once saved they are never changed
+  // (schema.sql enforces the same rule in the database).
   // -------------------------------------------------------------------------
 
   function createSupabaseStore(url, key) {
@@ -167,11 +168,32 @@
             .upsert({ task_id: taskId, work_date: date, ...times }, { onConflict: "task_id,work_date" })
         );
       },
+      async listWorkDates(employee, from, to) {
+        const rows = await check(
+          client
+            .from("task_entries")
+            .select("work_date, tasks!inner(employee)")
+            .eq("tasks.employee", employee)
+            .gte("work_date", from)
+            .lte("work_date", to)
+            .not("start_time", "is", null)
+        );
+        return [...new Set(rows.map((r) => r.work_date))];
+      },
+      listNotes(date) {
+        return check(client.from("notes").select("employee, body").eq("work_date", date));
+      },
+      saveNote(employee, date, body) {
+        return check(
+          client.from("notes").upsert({ employee, work_date: date, body }, { onConflict: "employee,work_date" })
+        );
+      },
       subscribe(onChange) {
         client
           .channel("dashboard-changes")
           .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, onChange)
           .on("postgres_changes", { event: "*", schema: "public", table: "task_entries" }, onChange)
+          .on("postgres_changes", { event: "*", schema: "public", table: "notes" }, onChange)
           .subscribe();
       },
     };
@@ -184,9 +206,9 @@
     function load() {
       try {
         const s = JSON.parse(localStorage.getItem(KEY));
-        if (s && Array.isArray(s.tasks) && s.entries) return s;
+        if (s && Array.isArray(s.tasks) && s.entries) return { notes: {}, ...s };
       } catch (e) {}
-      return { seedVersion: 0, tasks: [], entries: {} };
+      return { seedVersion: 0, tasks: [], entries: {}, notes: {} };
     }
     function save() {
       try {
@@ -249,7 +271,31 @@
       },
       async saveEntry(taskId, date, times) {
         state.entries[date] = state.entries[date] || {};
-        state.entries[date][taskId] = { ...times };
+        const old = state.entries[date][taskId] || {};
+        // Write-once times, same as the database trigger.
+        state.entries[date][taskId] = {
+          ...times,
+          start_time: old.start_time || times.start_time || null,
+          end_time: old.end_time || times.end_time || null,
+        };
+        save();
+      },
+      async listWorkDates(employee, from, to) {
+        const ids = new Set(state.tasks.filter((t) => t.employee === employee).map((t) => t.id));
+        return Object.keys(state.entries).filter(
+          (date) =>
+            date >= from &&
+            date <= to &&
+            Object.entries(state.entries[date]).some(([id, e]) => ids.has(id) && e.start_time)
+        );
+      },
+      async listNotes(date) {
+        const day = state.notes[date] || {};
+        return Object.keys(day).map((employee) => ({ employee, body: day[employee] }));
+      },
+      async saveNote(employee, date, body) {
+        state.notes[date] = state.notes[date] || {};
+        state.notes[date][employee] = body;
         save();
       },
       subscribe(onChange) {
@@ -286,7 +332,11 @@
     todayDay: document.getElementById("today-day"),
     todayWeekday: document.getElementById("today-weekday"),
     todayMonth: document.getElementById("today-month"),
-    datePicker: document.getElementById("date-picker"),
+    dateButton: document.getElementById("date-button"),
+    calendar: document.getElementById("calendar"),
+    notesTitle: document.getElementById("notes-title"),
+    notesInput: document.getElementById("notes-input"),
+    notesStatus: document.getElementById("notes-status"),
     datePrev: document.getElementById("date-prev"),
     dateNext: document.getElementById("date-next"),
     dateToday: document.getElementById("date-today"),
@@ -301,6 +351,7 @@
   let todayStr = ymd(new Date());
   let selectedDate = todayStr;
   let renderPending = false;
+  let notes = new Map(); // employee -> note text for selectedDate
 
   function isToday() {
     return selectedDate === todayStr;
@@ -319,6 +370,7 @@
   }
 
   function setActiveTab(name) {
+    flushNote();
     active = name;
     try {
       localStorage.setItem("sop-dashboard:tab", name);
@@ -328,8 +380,11 @@
 
   function setDate(date) {
     if (!date || date === selectedDate) return;
+    if (date > todayStr) date = todayStr; // nothing to see in the future
+    flushNote();
     selectedDate = date;
     entries = new Map();
+    notes = new Map();
     render();
     refresh();
   }
@@ -343,9 +398,9 @@
 
   async function refresh() {
     const date = selectedDate;
-    let t, e;
+    let t, e, n;
     try {
-      [t, e] = await Promise.all([store.listTasks(), store.listEntries(date)]);
+      [t, e, n] = await Promise.all([store.listTasks(), store.listEntries(date), store.listNotes(date)]);
     } catch (err) {
       showToast("Couldn't load tasks: " + err.message);
       return;
@@ -355,7 +410,9 @@
     entries = new Map(
       e.map((x) => [x.task_id, { start_time: x.start_time, end_time: x.end_time, quantity: x.quantity ?? null }])
     );
+    notes = new Map(n.map((x) => [x.employee, x.body || ""]));
     render();
+    if (calendarOpen) loadCalendarDots();
   }
 
   // Coalesce bursts of realtime events (e.g. a reseed) into one reload.
@@ -393,8 +450,8 @@
     el.todayWeekday.textContent = d.toLocaleDateString("en-GB", { weekday: "long" });
     el.todayMonth.textContent = d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
     el.today.setAttribute("datetime", selectedDate);
-    el.datePicker.value = selectedDate;
     el.dateToday.hidden = isToday();
+    el.dateNext.disabled = isToday();
     if (isToday()) {
       el.dateNote.textContent = "Today";
     } else if (selectedDate === addDays(todayStr, -1)) {
@@ -499,6 +556,9 @@
     );
   }
 
+  // Times can't be typed in. Today, an empty time shows a Start / End button
+  // that stamps the current time once; after that the time is locked.
+  // Other days are view-only.
   function timeCell(task, entry, field) {
     const td = document.createElement("td");
     td.className = "time-cell";
@@ -506,32 +566,30 @@
     const wrap = document.createElement("div");
     wrap.className = "time-wrap";
 
-    const input = document.createElement("input");
-    input.type = "time";
-    input.value = toInputTime(entry[field]);
-    input.setAttribute("aria-label", (field === "start_time" ? "Start time for " : "End time for ") + task.title);
-    input.addEventListener("change", () => setTime(task.id, field, input.value || null));
-    wrap.append(input);
-
-    if (!entry[field]) {
-      // "Now" only makes sense for today; other days are filled in by hand.
-      if (isToday()) {
-        const now = document.createElement("button");
-        now.type = "button";
-        now.className = "btn-now";
-        now.textContent = "Now";
-        now.addEventListener("click", () => setTime(task.id, field, nowHHMM()));
-        wrap.append(now);
+    if (entry[field]) {
+      const value = document.createElement("span");
+      value.className = "time-value";
+      value.textContent = formatClock(entry[field]);
+      value.title = "Recorded time (locked)";
+      wrap.append(value);
+    } else if (isToday()) {
+      const isStart = field === "start_time";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn-stamp " + (isStart ? "btn-stamp-start" : "btn-stamp-end");
+      btn.textContent = isStart ? "Start" : "End";
+      btn.setAttribute("aria-label", (isStart ? "Start " : "End ") + task.title + " now");
+      if (!isStart && !entry.start_time) {
+        btn.disabled = true;
+        btn.title = "Start the task first";
       }
+      btn.addEventListener("click", () => stampTime(task.id, field));
+      wrap.append(btn);
     } else {
-      const clear = document.createElement("button");
-      clear.type = "button";
-      clear.className = "btn-icon";
-      clear.title = "Clear time";
-      clear.setAttribute("aria-label", "Clear " + (field === "start_time" ? "start" : "end") + " time");
-      clear.textContent = "×";
-      clear.addEventListener("click", () => setTime(task.id, field, null));
-      wrap.append(clear);
+      const none = document.createElement("span");
+      none.className = "time-none";
+      none.textContent = "—";
+      wrap.append(none);
     }
     td.append(wrap);
     return td;
@@ -549,6 +607,15 @@
     const wrap = document.createElement("div");
     wrap.className = "qty-wrap";
     const value = entry.quantity || 0;
+
+    if (!isToday()) {
+      const v = document.createElement("span");
+      v.className = "qty-value";
+      v.textContent = value;
+      wrap.append(v);
+      td.append(wrap);
+      return td;
+    }
 
     const minus = document.createElement("button");
     minus.type = "button";
@@ -664,7 +731,7 @@
     // Don't rebuild the table under someone who is mid-edit in a time field;
     // catch up once they leave it.
     const focused = document.activeElement;
-    if (focused && (focused.type === "time" || focused.type === "number") && el.rows.contains(focused)) {
+    if (focused && focused.type === "number" && el.rows.contains(focused)) {
       renderPending = true;
       return;
     }
@@ -677,6 +744,7 @@
     el.qtyHead.hidden = !countsItems();
     if (countsItems()) el.qtyHead.textContent = DONE_COUNTERS[active].replace(/^./, (c) => c.toUpperCase()) + " Done";
     renderRows(list);
+    renderNotes();
     el.addInput.placeholder = "Add a task for " + active + "…";
   }
 
@@ -698,8 +766,11 @@
     );
   }
 
-  function setTime(taskId, field, value) {
-    saveEntryField(taskId, field, value);
+  function stampTime(taskId, field) {
+    const entry = entryFor(taskId);
+    if (!isToday() || entry[field]) return; // write-once
+    if (field === "end_time" && !entry.start_time) return;
+    saveEntryField(taskId, field, nowHHMM());
   }
 
   function setQuantity(taskId, value) {
@@ -790,7 +861,183 @@
     refresh();
   });
 
-  el.datePicker.addEventListener("change", () => setDate(el.datePicker.value));
+  // ---- Notepad: one note per employee per day, saved as you type. ----------
+
+  let noteTimer = null;
+  let notePending = null; // { employee, date, body } waiting to be saved
+  let noteShownFor = "";
+
+  function noteKey() {
+    return active + "|" + selectedDate;
+  }
+
+  function renderNotes() {
+    const d = parseYmd(selectedDate);
+    el.notesTitle.textContent =
+      "Notes · " + active + " · " + d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+    el.notesInput.placeholder = "Notes for " + active + (isToday() ? " today" : " on this day") + "…";
+    // Don't overwrite what someone is typing; do switch when tab or date changes.
+    const typing = document.activeElement === el.notesInput;
+    if (noteShownFor !== noteKey() || !typing) {
+      const body = notePending && notePending.employee === active && notePending.date === selectedDate
+        ? notePending.body
+        : notes.get(active) || "";
+      if (el.notesInput.value !== body) el.notesInput.value = body;
+      if (noteShownFor !== noteKey()) el.notesStatus.textContent = "";
+      noteShownFor = noteKey();
+    }
+  }
+
+  async function flushNote() {
+    clearTimeout(noteTimer);
+    const pending = notePending;
+    notePending = null;
+    if (!pending) return;
+    try {
+      await store.saveNote(pending.employee, pending.date, pending.body);
+      if (pending.date === selectedDate) notes.set(pending.employee, pending.body);
+      if (pending.employee + "|" + pending.date === noteKey()) el.notesStatus.textContent = "Saved";
+    } catch (e) {
+      showToast("Couldn't save notes: " + e.message);
+      if (pending.employee + "|" + pending.date === noteKey()) el.notesStatus.textContent = "Not saved";
+    }
+  }
+
+  el.notesInput.addEventListener("input", () => {
+    notePending = { employee: active, date: selectedDate, body: el.notesInput.value };
+    el.notesStatus.textContent = "Saving…";
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(flushNote, 700);
+  });
+  el.notesInput.addEventListener("blur", flushNote);
+  window.addEventListener("beforeunload", flushNote);
+
+  // ---- Calendar pop-up for picking a date. ---------------------------------
+
+  let calendarOpen = false;
+  let calendarMonth = selectedDate.slice(0, 7); // "YYYY-MM"
+  let calendarDots = new Set();
+
+  function monthBounds(ym) {
+    const [y, m] = ym.split("-").map(Number);
+    return { first: new Date(y, m - 1, 1), last: new Date(y, m, 0) };
+  }
+
+  async function loadCalendarDots() {
+    const month = calendarMonth;
+    const { first, last } = monthBounds(month);
+    try {
+      const dates = await store.listWorkDates(active, ymd(first), ymd(last));
+      if (month !== calendarMonth || !calendarOpen) return;
+      calendarDots = new Set(dates);
+      renderCalendar();
+    } catch (e) {
+      /* dots are a hint only */
+    }
+  }
+
+  function renderCalendar() {
+    const { first, last } = monthBounds(calendarMonth);
+    const head = document.createElement("div");
+    head.className = "cal-head";
+    const prev = document.createElement("button");
+    prev.type = "button";
+    prev.className = "btn-step";
+    prev.innerHTML = "&#8249;";
+    prev.setAttribute("aria-label", "Previous month");
+    prev.addEventListener("click", () => shiftMonth(-1));
+    const label = document.createElement("strong");
+    label.textContent = first.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = "btn-step";
+    next.innerHTML = "&#8250;";
+    next.setAttribute("aria-label", "Next month");
+    next.disabled = calendarMonth >= todayStr.slice(0, 7);
+    next.addEventListener("click", () => shiftMonth(1));
+    head.append(prev, label, next);
+
+    const grid = document.createElement("div");
+    grid.className = "cal-grid";
+    grid.setAttribute("role", "grid");
+    for (const wd of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
+      const h = document.createElement("span");
+      h.className = "cal-wd";
+      h.textContent = wd;
+      grid.append(h);
+    }
+    for (let i = 0; i < first.getDay(); i++) grid.append(document.createElement("span"));
+    for (let day = 1; day <= last.getDate(); day++) {
+      const date = calendarMonth + "-" + String(day).padStart(2, "0");
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "cal-day";
+      b.textContent = day;
+      if (date === todayStr) b.classList.add("is-today");
+      if (date === selectedDate) b.classList.add("is-selected");
+      if (calendarDots.has(date)) b.classList.add("has-work");
+      b.disabled = date > todayStr;
+      b.setAttribute("aria-label", parseYmd(date).toDateString() + (calendarDots.has(date) ? ", work recorded" : ""));
+      b.addEventListener("click", () => {
+        setDate(date);
+        toggleCalendar(false);
+      });
+      grid.append(b);
+    }
+
+    const foot = document.createElement("div");
+    foot.className = "cal-foot";
+    const legend = document.createElement("span");
+    legend.className = "cal-legend";
+    legend.textContent = "Dot = work recorded for " + active;
+    const todayBtn = document.createElement("button");
+    todayBtn.type = "button";
+    todayBtn.className = "btn-now";
+    todayBtn.textContent = "Today";
+    todayBtn.addEventListener("click", () => {
+      setDate(todayStr);
+      toggleCalendar(false);
+    });
+    foot.append(legend, todayBtn);
+
+    el.calendar.replaceChildren(head, grid, foot);
+  }
+
+  function shiftMonth(n) {
+    const [y, m] = calendarMonth.split("-").map(Number);
+    const d = new Date(y, m - 1 + n, 1);
+    calendarMonth = ymd(d).slice(0, 7);
+    calendarDots = new Set();
+    renderCalendar();
+    loadCalendarDots();
+  }
+
+  function toggleCalendar(open) {
+    calendarOpen = open === undefined ? !calendarOpen : open;
+    el.calendar.hidden = !calendarOpen;
+    el.dateButton.setAttribute("aria-expanded", String(calendarOpen));
+    if (calendarOpen) {
+      calendarMonth = selectedDate.slice(0, 7);
+      calendarDots = new Set();
+      renderCalendar();
+      loadCalendarDots();
+    }
+  }
+
+  el.dateButton.addEventListener("click", () => toggleCalendar());
+  el.today.addEventListener("click", () => toggleCalendar(true));
+  document.addEventListener("click", (e) => {
+    if (calendarOpen && !el.calendar.contains(e.target) && !el.dateButton.contains(e.target) && !el.today.contains(e.target)) {
+      toggleCalendar(false);
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && calendarOpen) {
+      toggleCalendar(false);
+      el.dateButton.focus();
+    }
+  });
+
   el.datePrev.addEventListener("click", () => setDate(addDays(selectedDate, -1)));
   el.dateNext.addEventListener("click", () => setDate(addDays(selectedDate, 1)));
   el.dateToday.addEventListener("click", () => setDate(todayStr));

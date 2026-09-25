@@ -20,7 +20,7 @@
       <header class="header">
         <div class="header-main">
           <h1>Team SOP Dashboard</h1>
-          <p class="subtitle">Daily tasks and standard procedures. Status updates automatically from start and end times.</p>
+          <p class="subtitle">Daily tasks and standard procedures. Press Start and End as you work; times are recorded automatically and can&rsquo;t be changed.</p>
           <ul class="legend" aria-label="Status legend">
             <li><span class="dot status-todo"></span>To Do: no start time</li>
             <li><span class="dot status-in_progress"></span>In Progress: started, not ended</li>
@@ -29,7 +29,7 @@
         </div>
         <div class="date-panel">
           <span id="date-note" class="date-note"></span>
-          <time id="today" class="today">
+          <time id="today" class="today" title="Choose a date">
             <span id="today-day" class="today-day"></span>
             <span class="today-rest">
               <span id="today-weekday" class="today-weekday"></span>
@@ -38,10 +38,14 @@
           </time>
           <div class="date-controls">
             <button type="button" id="date-prev" class="btn-step" aria-label="Previous day">&#8249;</button>
-            <input type="date" id="date-picker" aria-label="Choose a date" />
+            <button type="button" id="date-button" class="btn-calendar" aria-haspopup="dialog" aria-expanded="false" aria-controls="calendar">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="currentColor"><path d="M7 2h2v2h6V2h2v2h3a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3V2zm12 8H5v9h14v-9zM5 6v2h14V6H5zm2 6h2v2H7v-2zm4 0h2v2h-2v-2zm4 0h2v2h-2v-2z"/></svg>
+              Calendar
+            </button>
             <button type="button" id="date-next" class="btn-step" aria-label="Next day">&#8250;</button>
             <button type="button" id="date-today" class="btn-now" hidden>Today</button>
           </div>
+          <div id="calendar" class="calendar" role="dialog" aria-label="Choose a date" hidden></div>
           <div id="done-counter" class="done-counter" hidden></div>
         </div>
       </header>
@@ -73,6 +77,14 @@
           <input id="add-input" type="text" maxlength="120" placeholder="Add a task…" aria-label="New task title" />
           <button type="submit" class="btn-primary">Add Task</button>
         </form>
+      </section>
+
+      <section class="panel notes-panel" aria-labelledby="notes-title">
+        <div class="notes-head">
+          <h2 id="notes-title">Notes</h2>
+          <span id="notes-status" class="notes-status" aria-live="polite"></span>
+        </div>
+        <textarea id="notes-input" rows="5" aria-labelledby="notes-title"></textarea>
       </section>
     </main>
 

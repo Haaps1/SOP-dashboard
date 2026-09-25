@@ -3,10 +3,12 @@
 A daily task tracker for the team that also serves as the SOP. It is a static site (plain HTML, CSS and JS with no build step) backed by Supabase, so it can be hosted on your own domain.
 
 - Dark theme, with one tab per employee (Anil, Madhu, Manju, Harsha, Manju Designer)
-- The date shown large in the top right, with a date switcher (previous and next day, a calendar, and a Today button). Every day keeps its own record, so you can pick yesterday or any past date and see what was done.
+- The date shown large in the top right, with a date switcher (previous and next day, a pop-up month calendar, and a Today button). Days with recorded work have a green dot in the calendar. Every day keeps its own record, so you can pick yesterday or any past date and see what was done.
 - Manju Designer's tab has a **Videos Done** column (with − and + buttons) for each task, saved per day. The box under the date adds these up ("6 videos done today") and also shows how many tasks are finished. Which tabs get this is set in `DONE_COUNTERS` in `tasks-seed.js`.
 - A **Time Taken** column (end time minus start time; while a task is running it shows the time so far), plus a total for each person
 - Each task shows its name, start time, end time and status
+- Times can't be typed in. Each task has a **Start** button, then an **End** button (End works only after Start). Each button records the current time once. After that the time is locked, and it can't be changed or cleared, even through the database API. Past days are view-only.
+- A **notepad** under the task list for each employee, one per day. It saves automatically as you type.
 - Status is set automatically from the times:
   - No start time: **To Do** (red)
   - Start time set, no end time: **In Progress** (orange)
@@ -101,6 +103,10 @@ If you add or delete tasks from the dashboard and don't change `SEED_VERSION`, n
 | `updated_at` | timestamptz | Maintained by a trigger |
 
 A day with no entry for a task shows that task as **To Do**. Each new day therefore starts with everything To Do, and nothing has to be reset.
+
+`notes` holds one notepad per employee per day (`employee`, `work_date`, `body`).
+
+A trigger (`task_entries_lock_times`) makes start and end times write-once, and it refuses an end time without a start time. To fix a genuine mistake, an admin can disable that trigger in Supabase, edit the row, and turn the trigger back on.
 
 `app_meta` holds the current `seed_version`. Browsers can't read or write this table. Only `apply_seed` uses it.
 

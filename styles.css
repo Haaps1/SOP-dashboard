@@ -64,8 +64,52 @@ h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
 .header-main { flex: 1 1 360px; min-width: 0; }
 
 .date-panel {
+  position: relative;
   display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
 }
+.today { cursor: pointer; }
+
+.btn-calendar {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 12px;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.btn-calendar:hover, .btn-calendar[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+.btn-step:disabled { opacity: 0.35; cursor: default; }
+.btn-step:disabled:hover { border-color: var(--border); }
+
+.calendar {
+  position: absolute; top: 100%; right: 0; z-index: 20;
+  margin-top: 8px; width: 300px; max-width: calc(100vw - 32px);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+.cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.cal-head strong { font-size: 15px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cal-wd { text-align: center; font-size: 11px; font-weight: 600; color: var(--muted); padding-bottom: 4px; }
+.cal-day {
+  position: relative;
+  aspect-ratio: 1; max-width: 100%;
+  background: none; border: 1px solid transparent; border-radius: 8px;
+  color: var(--text); font: inherit; font-size: 14px; font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.cal-day:hover { background: var(--surface-2); }
+.cal-day:disabled { color: var(--border); cursor: default; background: none; }
+.cal-day.is-today { border-color: var(--accent); }
+.cal-day.is-selected { background: var(--accent); color: #0b0e14; font-weight: 700; }
+.cal-day.has-work::after {
+  content: ""; position: absolute; left: 50%; bottom: 4px; transform: translateX(-50%);
+  width: 5px; height: 5px; border-radius: 50%; background: var(--done);
+}
+.cal-day.is-selected.has-work::after { background: #0b0e14; }
+.cal-day:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cal-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
+.cal-legend { font-size: 12px; color: var(--muted); }
 .date-note {
   font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--muted);
@@ -79,13 +123,8 @@ h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
   font: inherit; font-size: 20px; line-height: 1; cursor: pointer;
 }
 .btn-step:hover { border-color: var(--accent); }
-input[type="date"] {
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 8px;
-  padding: 5px 8px; font: inherit; font-size: 14px;
-  color-scheme: dark;
-}
-input[type="date"]:focus, .btn-step:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.btn-step:focus-visible, .btn-calendar:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .done-counter {
   display: flex; align-items: baseline; gap: 6px;
   background: var(--done-bg); color: var(--done);
@@ -211,17 +250,45 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 .tasks .actions { width: 132px; text-align: right; }
 
 .time-wrap { display: flex; align-items: center; gap: 6px; }
-input[type="time"] {
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 8px;
-  font: inherit; font-size: 14px;
-  color-scheme: dark;
-  min-width: 108px;
+
+#add-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.time-value {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-input[type="time"]:focus, #add-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.time-value::after {
+  content: ""; width: 10px; height: 10px; opacity: 0.45;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2a5 5 0 0 1 5 5v3h1a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V11a1 1 0 0 1 1-1h1V7a5 5 0 0 1 5-5zm0 2a3 3 0 0 0-3 3v3h6V7a3 3 0 0 0-3-3z'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2a5 5 0 0 1 5 5v3h1a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V11a1 1 0 0 1 1-1h1V7a5 5 0 0 1 5-5zm0 2a3 3 0 0 0-3 3v3h6V7a3 3 0 0 0-3-3z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.time-none { color: var(--muted); }
+.btn-stamp {
+  min-width: 72px; height: 32px; padding: 0 14px;
+  border-radius: 8px; border: 1px solid transparent;
+  font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.btn-stamp-start { background: var(--progress-bg); color: var(--progress); border-color: rgba(245, 158, 11, 0.4); }
+.btn-stamp-start:hover { background: var(--progress); color: #0b0e14; }
+.btn-stamp-end { background: var(--done-bg); color: var(--done); border-color: rgba(34, 197, 94, 0.4); }
+.btn-stamp-end:hover { background: var(--done); color: #0b0e14; }
+.btn-stamp:disabled { background: none; color: var(--muted); border-color: var(--border); opacity: 0.5; cursor: not-allowed; }
+.btn-stamp:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.qty-value { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* Notepad */
+.notes-panel { margin-top: 20px; }
+.notes-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.notes-head h2 { margin: 0; font-size: 16px; font-weight: 700; }
+.notes-status { font-size: 12px; color: var(--muted); }
+#notes-input {
+  display: block; width: 100%; min-height: 120px; resize: vertical;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; font: inherit; line-height: 1.6;
+}
+#notes-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .btn-now {
   background: var(--surface-2); color: var(--muted);
@@ -343,5 +410,6 @@ input[type="time"]:focus, #add-input:focus { outline: 2px solid var(--accent); o
   .summary-total { margin-left: 0; }
   .today-day { font-size: 48px; }
   .date-panel { align-items: flex-start; }
+  .calendar { right: auto; left: 0; }
   .today-weekday { font-size: 17px; }
 }

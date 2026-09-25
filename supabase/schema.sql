@@ -6,6 +6,7 @@
 --   tasks         the standing task list for each employee (same every day)
 --   task_entries  one row per task per day with that day's start/end times,
 --                 so every date keeps its own history
+--   notes         one notepad per employee per day
 
 -- ---------------------------------------------------------------------------
 -- Tables
@@ -57,6 +58,14 @@ alter table public.task_entries add column if not exists quantity integer
 create index if not exists task_entries_work_date_idx
   on public.task_entries (work_date);
 
+create table if not exists public.notes (
+  employee    text not null,
+  work_date   date not null,
+  body        text not null default '',
+  updated_at  timestamptz not null default now(),
+  primary key (employee, work_date)
+);
+
 -- Key/value store for app bookkeeping (currently just the seed version).
 create table if not exists public.app_meta (
   key   text primary key,
@@ -80,6 +89,34 @@ drop trigger if exists task_entries_touch_updated_at on public.task_entries;
 create trigger task_entries_touch_updated_at
   before update on public.task_entries
   for each row execute function public.touch_updated_at();
+
+drop trigger if exists notes_touch_updated_at on public.notes;
+create trigger notes_touch_updated_at
+  before update on public.notes
+  for each row execute function public.touch_updated_at();
+
+-- Start and end times are write-once: the dashboard only has Start / End
+-- buttons, and once a time is recorded it can't be changed or cleared, even
+-- through the API. A task also can't be ended before it is started.
+-- (To correct a mistake, edit the row in the Supabase Table Editor after
+-- temporarily disabling this trigger.)
+create or replace function public.task_entries_lock_times()
+returns trigger language plpgsql as $$
+begin
+  if tg_op = 'UPDATE' then
+    new.start_time := coalesce(old.start_time, new.start_time);
+    new.end_time   := coalesce(old.end_time, new.end_time);
+  end if;
+  if new.end_time is not null and new.start_time is null then
+    raise exception 'A task has to be started before it can be ended';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists task_entries_lock_times on public.task_entries;
+create trigger task_entries_lock_times
+  before insert or update on public.task_entries
+  for each row execute function public.task_entries_lock_times();
 
 -- ---------------------------------------------------------------------------
 -- Seed versioning
@@ -147,13 +184,14 @@ end $$;
 
 alter table public.tasks        enable row level security;
 alter table public.task_entries enable row level security;
+alter table public.notes        enable row level security;
 alter table public.app_meta     enable row level security;  -- no policies: only apply_seed touches it
 
 do $$
 declare
   t text;
 begin
-  foreach t in array array['tasks', 'task_entries'] loop
+  foreach t in array array['tasks', 'task_entries', 'notes'] loop
     execute format('drop policy if exists "%1$s: anyone can read"   on public.%1$I', t);
     execute format('drop policy if exists "%1$s: anyone can insert" on public.%1$I', t);
     execute format('drop policy if exists "%1$s: anyone can update" on public.%1$I', t);
@@ -176,7 +214,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['tasks', 'task_entries'] loop
+  foreach t in array array['tasks', 'task_entries', 'notes'] loop
     if not exists (
       select 1 from pg_publication_tables
       where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
