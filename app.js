@@ -30,6 +30,35 @@
     return t ? t.slice(0, 5) : "";
   }
 
+  function toMinutes(t) {
+    if (!t) return null;
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
+  }
+
+  function nowMinutes() {
+    const d = new Date();
+    return d.getHours() * 60 + d.getMinutes();
+  }
+
+  // Minutes from start to end (or to now, while in progress). A task that
+  // ends "earlier" than it started is treated as running past midnight.
+  function minutesTaken(task) {
+    const start = toMinutes(task.start_time);
+    if (start === null) return null;
+    const end = task.end_time ? toMinutes(task.end_time) : nowMinutes();
+    let diff = end - start;
+    if (diff < 0) diff += 24 * 60;
+    return diff;
+  }
+
+  function formatDuration(min) {
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    if (!h) return m + "m";
+    return m ? h + "h " + m + "m" : h + "h";
+  }
+
   function nowHHMM() {
     const d = new Date();
     return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
@@ -263,6 +292,17 @@
 
   function renderSummary(list) {
     const c = countStatuses(list);
+    const total = list
+      .filter((t) => t.start_time && t.end_time)
+      .reduce((sum, t) => sum + minutesTaken(t), 0);
+    const totalChip = document.createElement("div");
+    totalChip.className = "summary-chip summary-total";
+    const totalN = document.createElement("strong");
+    totalN.textContent = formatDuration(total);
+    const totalLabel = document.createElement("span");
+    totalLabel.textContent = "Total Time Taken";
+    totalChip.append(totalN, totalLabel);
+
     el.summary.replaceChildren(
       ...["todo", "in_progress", "done"].map((s) => {
         const chip = document.createElement("div");
@@ -273,7 +313,8 @@
         label.textContent = STATUS_LABEL[s];
         chip.append(n, label);
         return chip;
-      })
+      }),
+      totalChip
     );
   }
 
@@ -333,6 +374,20 @@
         pill.textContent = STATUS_LABEL[status];
         st.append(pill);
 
+        const taken = document.createElement("td");
+        taken.className = "taken-cell";
+        taken.dataset.label = "Taken";
+        const mins = minutesTaken(task);
+        if (mins === null) {
+          taken.textContent = "—";
+          taken.classList.add("taken-none");
+        } else if (status === "done") {
+          taken.textContent = formatDuration(mins);
+        } else {
+          taken.textContent = formatDuration(mins) + " so far";
+          taken.classList.add("taken-running");
+        }
+
         const actions = document.createElement("td");
         actions.className = "actions";
         const del = document.createElement("button");
@@ -351,7 +406,7 @@
         });
         actions.append(del);
 
-        tr.append(num, title, timeCell(task, "start_time"), timeCell(task, "end_time"), st, actions);
+        tr.append(num, title, timeCell(task, "start_time"), timeCell(task, "end_time"), st, taken, actions);
         return tr;
       })
     );
@@ -412,7 +467,22 @@
     refresh();
   });
 
+  function renderDate() {
+    const d = new Date();
+    document.getElementById("today-day").textContent = d.getDate();
+    document.getElementById("today-weekday").textContent = d.toLocaleDateString("en-GB", { weekday: "long" });
+    document.getElementById("today-month").textContent = d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+    document.getElementById("today").setAttribute("datetime", d.toISOString().slice(0, 10));
+  }
+
+  // Keep "so far" durations and the date current.
+  setInterval(() => {
+    renderDate();
+    render();
+  }, 60 * 1000);
+
   async function start() {
+    renderDate();
     if (store.mode === "local") {
       el.banner.hidden = false;
     }

@@ -53,13 +53,26 @@ html, body {
 .header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 24px;
   flex-wrap: wrap;
   margin-bottom: 24px;
 }
 h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
-.subtitle { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+.subtitle { margin: 4px 0 12px; color: var(--muted); font-size: 14px; }
+.header-main { flex: 1 1 360px; min-width: 0; }
+
+.today {
+  display: flex; align-items: center; gap: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.today-day {
+  font-size: 64px; font-weight: 700; line-height: 1;
+  letter-spacing: -0.03em; color: var(--text);
+}
+.today-rest { display: flex; flex-direction: column; line-height: 1.25; }
+.today-weekday { font-size: 20px; font-weight: 600; color: var(--accent); }
+.today-month { font-size: 15px; color: var(--muted); }
 
 .legend {
   list-style: none; margin: 0; padding: 0;
@@ -115,6 +128,11 @@ h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
   font-size: 13px;
 }
 .summary-chip strong { font-size: 20px; font-variant-numeric: tabular-nums; }
+.summary-total { color: var(--text); background: var(--surface-2); margin-left: auto; }
+
+.taken-cell { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.taken-running { color: var(--progress); font-weight: 500; }
+.taken-none { color: var(--muted); font-weight: 400; }
 
 .status-todo { color: var(--todo); background: var(--todo-bg); }
 .status-in_progress { color: var(--progress); background: var(--progress-bg); }
@@ -228,5 +246,9 @@ input[type="time"]:focus, #add-input:focus { outline: 2px solid var(--accent); o
   .tasks .actions { grid-column: 2; grid-row: 1; width: auto; }
   .tasks .time-cell { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; }
   .tasks .time-cell::before { content: attr(data-label); width: 40px; color: var(--muted); font-size: 13px; }
-  .tasks .status-cell { grid-column: 1 / -1; }
+  .tasks .status-cell { grid-column: 1; }
+  .tasks .taken-cell { grid-column: 2; text-align: right; align-self: center; }
+  .summary-total { margin-left: 0; }
+  .today-day { font-size: 48px; }
+  .today-weekday { font-size: 17px; }
 }

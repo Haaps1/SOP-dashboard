@@ -4,9 +4,9 @@
 // page load the database is rewritten to match this list, instead of staying
 // stuck on the old saved tasks. Tasks whose employee + title are unchanged keep
 // their start/end times; renamed or removed tasks are replaced.
-window.SEED_VERSION = 1;
+window.SEED_VERSION = 2;
 
-window.EMPLOYEES = ["Anil", "Madhu", "Manju", "Harsha"];
+window.EMPLOYEES = ["Anil", "Madhu", "Manju", "Harsha", "Manju Designer"];
 
 window.SEED_TASKS = {
   Anil: [
@@ -50,5 +50,13 @@ window.SEED_TASKS = {
     "Promotional Reels",
     "Insta Reels Content",
     "AI Reels",
+  ],
+  "Manju Designer": [
+    "Dr. Nandini Video",
+    "Dr. Sachin Video",
+    "Dr. Varun Kumar J Video",
+    "Dr. Neema Bhat Video",
+    "Dr. Mangesh Kamath Video",
+    "Dr. Vishrutha Video",
   ],
 };

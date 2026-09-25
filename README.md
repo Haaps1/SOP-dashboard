@@ -2,7 +2,9 @@
 
 A daily task tracker for the team that also serves as the SOP. It is a static site (plain HTML, CSS and JS with no build step) backed by Supabase, so it can be hosted on your own domain.
 
-- Dark theme, with one tab per employee (Anil, Madhu, Manju, Harsha)
+- Dark theme, with one tab per employee (Anil, Madhu, Manju, Harsha, Manju Designer)
+- Today's date shown large in the top right
+- A **Time Taken** column (end time minus start time; while a task is running it shows the time so far), plus a total for each person
 - Each task shows its name, start time, end time and status
 - Status is set automatically from the times:
   - No start time: **To Do** (red)
@@ -76,7 +78,7 @@ If you add or delete tasks from the dashboard and don't change `SEED_VERSION`, n
 | Column | Type | Notes |
 | --- | --- | --- |
 | `id` | uuid | Primary key |
-| `employee` | text | `Anil`, `Madhu`, `Manju`, `Harsha` |
+| `employee` | text | `Anil`, `Madhu`, `Manju`, `Harsha`, `Manju Designer` |
 | `title` | text | Task name |
 | `position` | int | Sort order within an employee |
 | `start_time` | time | Null means not started |

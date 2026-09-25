@@ -18,15 +18,22 @@
 
     <main class="container">
       <header class="header">
-        <div>
+        <div class="header-main">
           <h1>Team SOP Dashboard</h1>
           <p class="subtitle">Daily tasks and standard procedures. Status updates automatically from start and end times.</p>
+          <ul class="legend" aria-label="Status legend">
+            <li><span class="dot status-todo"></span>To Do: no start time</li>
+            <li><span class="dot status-in_progress"></span>In Progress: started, not ended</li>
+            <li><span class="dot status-done"></span>Done: end time set</li>
+          </ul>
         </div>
-        <ul class="legend" aria-label="Status legend">
-          <li><span class="dot status-todo"></span>To Do: no start time</li>
-          <li><span class="dot status-in_progress"></span>In Progress: started, not ended</li>
-          <li><span class="dot status-done"></span>Done: end time set</li>
-        </ul>
+        <time id="today" class="today">
+          <span id="today-day" class="today-day"></span>
+          <span class="today-rest">
+            <span id="today-weekday" class="today-weekday"></span>
+            <span id="today-month" class="today-month"></span>
+          </span>
+        </time>
       </header>
 
       <nav id="tabs" class="tabs" role="tablist" aria-label="Employees"></nav>
@@ -42,6 +49,7 @@
               <th>Start Time</th>
               <th>End Time</th>
               <th>Status</th>
+              <th>Time Taken</th>
               <th class="actions"><span class="sr-only">Actions</span></th>
             </tr>
           </thead>
