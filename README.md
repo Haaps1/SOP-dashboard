@@ -11,7 +11,8 @@ A daily task tracker for the team that also serves as the SOP. It is a static si
   - No start time: **To Do** (red)
   - Start time set, no end time: **In Progress** (orange)
   - End time set: **Done** (green)
-- You can add or delete tasks for each employee
+- You can add, duplicate, reorder (up and down arrows) or delete tasks for each employee. A copy is placed directly below the original and named "Title (2)", "Title (3)" and so on.
+- Any task that is in progress on the selected day is shown in a large card at the top of the list, with its start time and how long it has been running.
 - Changes appear live on every open copy of the dashboard (Supabase Realtime)
 
 ## Files
@@ -70,6 +71,7 @@ On the next page load, the database is rewritten to match the new list. The rewr
 - Tasks that are still in the list, with the same employee and title, keep their full daily history.
 - Tasks taken out of `tasks-seed.js` are removed, together with their history.
 - Tasks added from the dashboard are never touched by a reseed.
+- The order of the seeded tasks is reset to the order in `tasks-seed.js`. Any reordering done on the dashboard is overwritten.
 
 If you add or delete tasks from the dashboard and don't change `SEED_VERSION`, nothing is overwritten.
 

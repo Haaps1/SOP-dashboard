@@ -66,6 +66,30 @@
     return m ? h + "h " + m + "m" : h + "h";
   }
 
+  // "14:05:00" -> "2:05 PM"
+  function formatClock(t) {
+    const [h, m] = t.split(":").map(Number);
+    return ((h + 11) % 12) + 1 + ":" + String(m).padStart(2, "0") + (h < 12 ? " AM" : " PM");
+  }
+
+  const ICONS = {
+    up: '<path d="M12 6l-6 6h4v6h4v-6h4z"/>',
+    down: '<path d="M12 18l6-6h-4V6h-4v6H6z"/>',
+    copy: '<path d="M8 3h11a2 2 0 0 1 2 2v11h-2V5H8V3zm-3 4h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zm0 2v10h10V9H5z"/>',
+    trash: '<path d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 12H7L6 9zm4 2v8h2v-8h-2zm4 0v8h2v-8h-2z"/>',
+  };
+
+  function iconButton(icon, label, className, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = className;
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+    btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="currentColor">' + ICONS[icon] + "</svg>";
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
   function nowHHMM() {
     const d = new Date();
     return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
@@ -94,6 +118,7 @@
   //   listEntries(date)               -> Promise<Entry[]> for that day
   //   insertTask({employee,title,position})
   //   removeTask(id)                  -> also removes its history
+  //   setPositions([{id, position}])  -> reorder tasks
   //   saveEntry(taskId, date, {start_time, end_time, quantity})
   //   subscribe(onChange)             -> called when data changes elsewhere
   // -------------------------------------------------------------------------
@@ -129,6 +154,11 @@
       },
       removeTask(id) {
         return check(client.from("tasks").delete().eq("id", id));
+      },
+      setPositions(updates) {
+        return Promise.all(
+          updates.map((u) => check(client.from("tasks").update({ position: u.position }).eq("id", u.id)))
+        );
       },
       saveEntry(taskId, date, times) {
         return check(
@@ -210,6 +240,13 @@
         for (const date of Object.keys(state.entries)) delete state.entries[date][id];
         save();
       },
+      async setPositions(updates) {
+        for (const u of updates) {
+          const t = state.tasks.find((x) => x.id === u.id);
+          if (t) t.position = u.position;
+        }
+        save();
+      },
       async saveEntry(taskId, date, times) {
         state.entries[date] = state.entries[date] || {};
         state.entries[date][taskId] = { ...times };
@@ -238,6 +275,7 @@
   const el = {
     tabs: document.getElementById("tabs"),
     summary: document.getElementById("summary"),
+    spotlight: document.getElementById("spotlight"),
     rows: document.getElementById("task-rows"),
     empty: document.getElementById("empty"),
     addForm: document.getElementById("add-form"),
@@ -382,6 +420,32 @@
     sub.className = "done-sub";
     sub.textContent = finished + " / " + list.length + " tasks finished";
     el.doneCounter.replaceChildren(n, label, sub);
+  }
+
+  // Big "now working on" card for tasks in progress on the selected day.
+  function renderSpotlight(list) {
+    const running = list.filter((t) => statusOf(entryFor(t.id)) === "in_progress");
+    el.spotlight.hidden = running.length === 0;
+    el.spotlight.replaceChildren(
+      ...running.map((task) => {
+        const entry = entryFor(task.id);
+        const item = document.createElement("div");
+        item.className = "spotlight-item";
+        const eyebrow = document.createElement("span");
+        eyebrow.className = "spotlight-eyebrow";
+        eyebrow.textContent = "In Progress";
+        const title = document.createElement("strong");
+        title.className = "spotlight-title";
+        title.textContent = task.title;
+        const meta = document.createElement("span");
+        meta.className = "spotlight-meta";
+        const mins = minutesTaken(entry, isToday());
+        meta.textContent =
+          "Started " + formatClock(entry.start_time) + " · " + (mins === null ? "no end time" : formatDuration(mins) + " so far");
+        item.append(eyebrow, title, meta);
+        return item;
+      })
+    );
   }
 
   function renderTabs() {
@@ -562,21 +626,22 @@
 
         const actions = document.createElement("td");
         actions.className = "actions";
-        const del = document.createElement("button");
-        del.type = "button";
-        del.className = "btn-delete";
-        del.title = "Delete task";
-        del.setAttribute("aria-label", "Delete " + task.title);
-        del.innerHTML =
-          '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 12H7L6 9zm4 2v8h2v-8h-2zm4 0v8h2v-8h-2z"/></svg>';
-        del.addEventListener("click", () => {
+        const tools = document.createElement("div");
+        tools.className = "row-tools";
+        const up = iconButton("up", "Move " + task.title + " up", "btn-tool", () => moveTask(task, -1));
+        up.disabled = i === 0;
+        const down = iconButton("down", "Move " + task.title + " down", "btn-tool", () => moveTask(task, 1));
+        down.disabled = i === list.length - 1;
+        const copy = iconButton("copy", "Duplicate " + task.title, "btn-tool", () => duplicateTask(task));
+        const del = iconButton("trash", "Delete " + task.title, "btn-tool btn-delete", () => {
           // Two-step delete: first click arms the button, second click deletes.
           if (del.classList.contains("armed")) return deleteTask(task);
           del.classList.add("armed");
           del.textContent = "Delete?";
           setTimeout(() => render(), 3000);
         });
-        actions.append(del);
+        tools.append(up, down, copy, del);
+        actions.append(tools);
 
         tr.append(
           num,
@@ -606,6 +671,7 @@
     renderPending = false;
     const list = tasksFor(active);
     renderTabs();
+    renderSpotlight(list);
     renderSummary(list);
     renderDoneCounter(list);
     el.qtyHead.hidden = !countsItems();
@@ -638,6 +704,66 @@
 
   function setQuantity(taskId, value) {
     saveEntryField(taskId, "quantity", value > 0 ? value : null);
+  }
+
+  // Save a new order for one employee's list: positions become 0..n-1 and
+  // only the tasks whose position changed are written.
+  function applyOrder(ordered) {
+    const updates = [];
+    ordered.forEach((t, i) => {
+      if (t.position !== i) updates.push({ id: t.id, position: i });
+    });
+    if (!updates.length) return Promise.resolve();
+    updates.forEach((u) => (tasks.find((t) => t.id === u.id).position = u.position));
+    tasks.sort((a, b) => a.position - b.position);
+    render();
+    return store.setPositions(updates);
+  }
+
+  async function moveTask(task, dir) {
+    const list = tasksFor(task.employee);
+    const i = list.findIndex((t) => t.id === task.id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    try {
+      await applyOrder(list);
+    } catch (e) {
+      showToast("Couldn't reorder: " + e.message);
+      refresh();
+    }
+  }
+
+  // "Dr. Nandini Video" -> "Dr. Nandini Video (2)", then "(3)", and so on.
+  function copyTitle(title, employee) {
+    const base = title.replace(/ \(\d+\)$/, "");
+    let max = 1;
+    for (const t of tasksFor(employee)) {
+      if (t.title === base) continue;
+      const m = t.title.startsWith(base + " (") && t.title.slice(base.length).match(/^ \((\d+)\)$/);
+      if (m) max = Math.max(max, Number(m[1]));
+    }
+    return base + " (" + (max + 1) + ")";
+  }
+
+  async function duplicateTask(task) {
+    const list = tasksFor(task.employee);
+    const i = list.findIndex((t) => t.id === task.id);
+    const title = copyTitle(task.title, task.employee);
+    try {
+      // Number the list 0..n-1, move everything below the original down one
+      // place, then insert the copy directly below the original.
+      await applyOrder(list);
+      const shift = list.slice(i + 1).map((t, k) => ({ id: t.id, position: i + 2 + k }));
+      if (shift.length) {
+        shift.forEach((u) => (tasks.find((t) => t.id === u.id).position = u.position));
+        await store.setPositions(shift);
+      }
+      await store.insertTask({ employee: task.employee, title, position: i + 1 });
+    } catch (e) {
+      showToast("Couldn't duplicate: " + e.message);
+    }
+    refresh();
   }
 
   function deleteTask(task) {

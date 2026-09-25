@@ -208,7 +208,7 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 .tasks tbody tr:hover { background: var(--surface-2); }
 .tasks .num { width: 36px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .tasks .title { font-weight: 500; }
-.tasks .actions { width: 44px; text-align: right; }
+.tasks .actions { width: 132px; text-align: right; }
 
 .time-wrap { display: flex; align-items: center; gap: 6px; }
 input[type="time"] {
@@ -231,13 +231,47 @@ input[type="time"]:focus, #add-input:focus { outline: 2px solid var(--accent); o
 }
 .btn-now:hover { color: var(--text); border-color: var(--accent); }
 
+.row-tools { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
+.btn-tool {
+  width: 30px; height: 30px;
+  background: none; border: none; color: var(--muted);
+  border-radius: 6px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.btn-tool:hover { color: var(--text); background: var(--surface-2); }
+.btn-tool:disabled { opacity: 0.25; cursor: default; }
+.btn-tool:disabled:hover { background: none; color: var(--muted); }
+.btn-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.spotlight { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.spotlight-item {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 16px 20px;
+  background: var(--progress-bg);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: var(--radius);
+}
+.spotlight-eyebrow {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--progress);
+}
+.spotlight-eyebrow::before {
+  content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--progress);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+@keyframes pulse { 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .spotlight-eyebrow::before { animation: none; } }
+.spotlight-title { font-size: 30px; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; text-wrap: balance; }
+.spotlight-meta { color: var(--progress); font-size: 15px; font-variant-numeric: tabular-nums; }
+
 .btn-icon, .btn-delete {
   background: none; border: none; color: var(--muted);
   cursor: pointer; border-radius: 6px;
   display: inline-flex; align-items: center; justify-content: center;
 }
 .btn-icon { font-size: 18px; width: 26px; height: 26px; line-height: 1; }
-.btn-delete { width: 32px; height: 32px; }
+.btn-delete { width: 30px; height: 30px; }
 .btn-icon:hover { color: var(--text); background: var(--surface-2); }
 .btn-delete:hover { color: var(--todo); background: var(--todo-bg); }
 .btn-delete.armed {
@@ -296,6 +330,7 @@ input[type="time"]:focus, #add-input:focus { outline: 2px solid var(--accent); o
   .tasks .num { display: none; }
   .tasks .title { grid-column: 1; }
   .tasks .actions { grid-column: 2; grid-row: 1; width: auto; }
+  .spotlight-title { font-size: 24px; }
   .tasks .time-cell { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; }
   .tasks .time-cell::before { content: attr(data-label); width: 40px; color: var(--muted); font-size: 13px; }
   .tasks .status-cell { grid-column: 1; }
