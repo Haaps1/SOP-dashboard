@@ -20,4 +20,9 @@ RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 </FilesMatch>
 RedirectMatch 404 /(\.git|supabase)(/|$)
 
+# The database password lives in api/config.php; never serve it directly.
+<FilesMatch "^config(\.sample)?\.php$">
+  Require all denied
+</FilesMatch>
+
 Options -Indexes

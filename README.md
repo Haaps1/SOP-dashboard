@@ -1,6 +1,6 @@
 # Team SOP Dashboard
 
-A daily task tracker for the team that also serves as the SOP. It is a static site (plain HTML, CSS and JS with no build step) backed by Supabase, so it can be hosted on your own domain.
+A daily task tracker for the team that also serves as the SOP. It is plain HTML, CSS and JS with no build step. The data is stored in MySQL through a small PHP API (`api/`), so the whole thing runs on ordinary web hosting such as Hostinger. Supabase is supported as an alternative.
 
 - Dark theme, with one tab per employee (Anil, Madhu, Manju, Harsha, Manju Designer)
 - The date shown large in the top right, with a date switcher (previous and next day, a pop-up month calendar, and a Today button). Days with recorded work have a green dot in the calendar. Every day keeps its own record, so you can pick yesterday or any past date and see what was done.
@@ -15,7 +15,7 @@ A daily task tracker for the team that also serves as the SOP. It is a static si
   - End time set: **Done** (green)
 - You can add, duplicate, reorder (up and down arrows) or delete tasks for each employee. A copy is placed directly below the original and named "Title (2)", "Title (3)" and so on.
 - Any task that is in progress on the selected day is shown in a large card at the top of the list, with its start time and how long it has been running.
-- Changes appear live on every open copy of the dashboard (Supabase Realtime)
+- Everyone shares the same data. Open dashboards check for changes every 15 seconds, and straight away when you return to the tab. With Supabase, changes appear instantly.
 
 ## Files
 
@@ -23,61 +23,65 @@ A daily task tracker for the team that also serves as the SOP. It is a static si
 | --- | --- |
 | `index.html` | Page markup |
 | `styles.css` | Dark theme and the phone layout |
-| `app.js` | UI and data layer (Supabase store, plus a local-only fallback store) |
-| `tasks-seed.js` | Default task list per employee, and `SEED_VERSION` |
-| `config.js` | Supabase Project URL and anon key |
-| `supabase/schema.sql` | Tables, RLS policies, the `apply_seed` function and Realtime setup |
+| `app.js` | UI and data layer: a PHP store, a Supabase store, and a local-only store |
+| `tasks-seed.js` | Default task list per employee, `SEED_VERSION` and `DONE_COUNTERS` |
+| `config.js` | Which backend to use (`php`, `supabase` or `local`) |
+| `api/index.php` | PHP + MySQL API. It creates its own tables on first use. |
+| `api/config.sample.php` | Template for `api/config.php`, which holds the database login. That file is not in git. |
+| `.htaccess` | Forces HTTPS, makes updates show immediately, and hides private files |
+| `supabase/schema.sql` | Only needed if you use Supabase instead of PHP + MySQL |
 
-## Setup
+## Setup on Hostinger (PHP + MySQL)
 
-### 1. Create the Supabase project
+This works on any Hostinger web hosting plan that includes PHP and MySQL (Premium, Business, Cloud and similar).
 
-1. Go to [supabase.com](https://supabase.com) and create a new project (the free tier is enough).
-2. Open **SQL Editor**, then **New query**. Paste in all of `supabase/schema.sql` and click **Run**. The script is safe to run again.
-3. Open **Project Settings**, then **API**. Copy the **Project URL** and the **anon public** key.
+### 1. Create the database
 
-### 2. Connect the dashboard
+1. In hPanel, go to **Websites → Manage → Databases → Management** (called **MySQL Databases** on some plans).
+2. Enter a database name, a username and a strong password, then click **Create**. Hostinger adds a prefix, e.g. `u123456789_sop`.
+3. Note the full **database name**, **username** and **password**. The host is `localhost`.
 
-Paste both values into `config.js`:
+You don't need phpMyAdmin. The dashboard creates its tables itself the first time it loads.
 
-```js
-window.SOP_CONFIG = {
-  supabaseUrl: "https://xxxxxxxx.supabase.co",
-  supabaseAnonKey: "eyJhbGciOi...",
-};
-```
+### 2. Upload the files
 
-The anon key is meant to be public, and it is fine to commit it. Row Level Security in `schema.sql` decides what it is allowed to do. **Never** put the `service_role` key in this file.
+1. Choose where the dashboard will live:
+   - A subdomain such as `tasks.yourdomain.com` (recommended): go to **Domains → Subdomains** and create it.
+   - The main domain: use `public_html`. Only do this if nothing else is on that domain.
+2. Open **Files → File Manager** and go to that folder.
+3. Upload the site zip and choose **Extract**. The folder should then contain `index.html`, `styles.css`, `app.js`, `config.js`, `tasks-seed.js`, `.htaccess` and the `api/` folder.
 
-The first time the page loads, it fills the `tasks` table from `tasks-seed.js`.
+### 3. Enter the database details
 
-If `config.js` is left empty, the dashboard runs in **local mode**: a yellow banner appears and data is saved only in that browser. This is handy for trying it out.
+1. In File Manager, open `api/config.php`. If it isn't there, copy `api/config.sample.php` to `api/config.php`.
+2. Fill in `db_name`, `db_user` and `db_pass` from step 1. Leave `db_host` as `localhost`.
+3. Save the file.
 
-### 3. Host it on Hostinger
+### 4. Turn on SSL and open the site
 
-The site is five static files plus `.htaccess`. It needs no PHP, database or Node on Hostinger, because the data lives in Supabase.
+In hPanel, open **Security → SSL** and make sure the domain or subdomain has an active certificate. Then open the address. If something is wrong with the database settings, a red bar at the top says what to fix.
 
-**Option A: upload the files (simplest)**
+### Updating the site later
 
-1. In hPanel, go to **Websites**, choose your site, then **File Manager**.
-2. Open `public_html`. For a subdomain such as `tasks.yourdomain.com`, first create it under **Domains → Subdomains**, then open the folder it creates.
-3. Upload `index.html`, `styles.css`, `app.js`, `config.js`, `tasks-seed.js` and `.htaccess`. `.htaccess` is a hidden file; if you use the ready-made zip, upload it and choose **Extract**.
-4. Open the domain in a browser.
+Upload the changed files again. **Don't overwrite `api/config.php`**, because it holds your database password.
 
-To update the site later, upload the changed files again.
+Alternatively, use hPanel **Advanced → Git** to deploy straight from `https://github.com/Haaps1/SOP-dashboard.git`:
+- For a private repository, add the SSH key Hostinger shows to GitHub under **Settings → Deploy keys**, and use `git@github.com:Haaps1/SOP-dashboard.git`.
+- The target folder must be empty for the first deploy.
+- After the first deploy, create `api/config.php` in File Manager as in step 3. Git deploys don't touch it, because it isn't in the repository.
+- Optional: add the **Auto deployment** webhook URL to GitHub under **Settings → Webhooks**, so that every push updates the site.
 
-**Option B: deploy from GitHub (updates with one click)**
+### Backups
 
-1. In hPanel, open **Advanced → Git**.
-2. Repository: `https://github.com/Haaps1/SOP-dashboard.git`. Branch: the branch that holds the site. Directory: leave it empty for `public_html`, or enter a folder name.
-   - If the repository is private, first copy the SSH key Hostinger shows on that page. Add it in GitHub under **Settings → Deploy keys**, then use the SSH URL `git@github.com:Haaps1/SOP-dashboard.git`.
-   - The target folder must be empty the first time.
-3. Click **Create**, then **Deploy**.
-4. Optional: copy the **Auto deployment** webhook URL into GitHub under **Settings → Webhooks**, so that every push updates the site.
+Everything is in the MySQL database. hPanel's **Backups** section includes databases, and you can also export it any time from **Databases → phpMyAdmin → Export**.
 
-`.htaccess` keeps the README, `supabase/` and `.git` from being served, forces HTTPS, and makes sure browsers pick up new versions.
+## Using Supabase instead (optional)
 
-**Turn on SSL.** In hPanel, open **Security → SSL** and make sure the domain (or subdomain) has an active certificate. Hostinger's free one is fine.
+1. Create a project at [supabase.com](https://supabase.com), open **SQL Editor**, and run all of `supabase/schema.sql`.
+2. In `config.js`, set `backend: "supabase"` and paste the **Project URL** and **anon public** key from **Project Settings → API**. Never use the `service_role` key.
+3. Upload the site as above. The `api/` folder isn't needed.
+
+Set `backend: "local"` to try the dashboard with data saved only in your browser.
 
 ## Editing the default task list
 
@@ -95,6 +99,8 @@ On the next page load, the database is rewritten to match the new list. The rewr
 If you add or delete tasks from the dashboard and don't change `SEED_VERSION`, nothing is overwritten.
 
 ## Database
+
+The PHP API (`api/index.php`) and `supabase/schema.sql` create the same tables. The column types below are the Supabase ones; MySQL uses the closest equivalents.
 
 `tasks` is the standing task list. It is the same every day.
 
@@ -116,24 +122,22 @@ If you add or delete tasks from the dashboard and don't change `SEED_VERSION`, n
 | `start_time` | time | Null means not started that day |
 | `end_time` | time | Null means not finished that day |
 | `quantity` | int | How many items were done that day (the Videos Done column). Null or 0 or more. |
-| `status` | text | **Generated column**: `todo`, `in_progress` or `done`, calculated from the times. It is never written directly. |
-| `updated_at` | timestamptz | Maintained by a trigger |
+| `status` | text | Supabase only. **Generated column**: `todo`, `in_progress` or `done`, calculated from the times. The dashboard works out status the same way. |
+| `updated_at` | timestamptz | Maintained automatically |
 
 A day with no entry for a task shows that task as **To Do**. Each new day therefore starts with everything To Do, and nothing has to be reset.
 
 `notes` holds one notepad per employee per day (`employee`, `work_date`, `body`).
 
-A trigger (`task_entries_lock_times`) makes start and end times write-once, and it refuses an end time without a start time. To fix a genuine mistake, an admin can disable that trigger in Supabase, edit the row, and turn the trigger back on.
+Start and end times are write-once, and an end time without a start time is refused. On PHP + MySQL, the API enforces this. To fix a genuine mistake, edit the row in phpMyAdmin. On Supabase, a trigger (`task_entries_lock_times`) enforces it; an admin can disable the trigger, edit the row, and turn it back on.
 
-`app_meta` holds the current `seed_version`. Browsers can't read or write this table. Only `apply_seed` uses it.
+`app_meta` holds the current `seed_version`. Only the seeding step uses it.
 
 ## Security note, and the next step (logins)
 
-At the moment, **anyone who has the link can view and edit** the dashboard. This matches the one-shared-link setup, but because clients will also get the link, the next step should be Supabase Auth. The rough plan:
+At the moment, **anyone who has the link can view and edit** the dashboard. This matches the one-shared-link setup, but because clients will also get the link, the next step should be logins:
 
-1. Turn on **Authentication**, then **Providers**, then Email (or Google) in Supabase.
-2. Add a login screen to `app.js` using `supabase.auth.signInWithOtp` or `signInWithPassword`.
-3. In `schema.sql`, change the insert, update and delete policies from `anon, authenticated` to `authenticated` only (optionally also limiting each employee to their own rows). Then run `revoke execute on function apply_seed from anon;`.
-4. Keep the `select` policy open to `anon` if clients should still be able to view without logging in.
+- **PHP + MySQL:** add a `users` table and a login page using PHP sessions (`password_hash` / `password_verify`). Have `api/index.php` refuse write actions unless the session belongs to staff, and optionally let clients view without logging in.
+- **Supabase:** turn on Supabase Auth, and limit the insert, update and delete policies in `schema.sql` to `authenticated`.
 
-The data layer in `app.js` is already split into a store object (`createSupabaseStore`), so adding auth won't touch the UI code.
+The data layer in `app.js` is already split into store objects, so adding logins won't change the UI code.

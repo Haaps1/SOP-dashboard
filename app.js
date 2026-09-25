@@ -199,7 +199,62 @@
     };
   }
 
-  // Fallback used until Supabase is configured: data lives in this browser only.
+  // PHP + MySQL API in api/index.php (for regular web hosting such as
+  // Hostinger). There is no push channel, so changes from other people are
+  // picked up by polling.
+  function createPhpStore(apiUrl) {
+    async function call(action, params) {
+      let res;
+      try {
+        res = await fetch(apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, ...params }),
+          cache: "no-store",
+        });
+      } catch (e) {
+        throw new Error("Can't reach the server. Check your internet connection.");
+      }
+      let body = null;
+      try {
+        body = await res.json();
+      } catch (e) {
+        /* not JSON: PHP missing or a server error page */
+      }
+      if (!res.ok || !body || body.error) {
+        throw new Error((body && body.error) || "The server returned an error (" + res.status + ").");
+      }
+      return body.data;
+    }
+
+    return {
+      mode: "php",
+      init() {
+        return call("init", { version: SEED_VERSION, tasks: seedRows() });
+      },
+      listTasks: () => call("listTasks"),
+      listEntries: (date) => call("listEntries", { date }),
+      insertTask: (row) => call("insertTask", row),
+      removeTask: (id) => call("removeTask", { id }),
+      setPositions: (updates) => call("setPositions", { updates }),
+      saveEntry: (taskId, date, times) => call("saveEntry", { task_id: taskId, date, ...times }),
+      listWorkDates: (employee, from, to) => call("listWorkDates", { employee, from, to }),
+      listNotes: (date) => call("listNotes", { date }),
+      saveNote: (employee, date, body) => call("saveNote", { employee, date, body }),
+      subscribe(onChange) {
+        // Check for changes every 15 seconds while the page is visible, and
+        // straight away when someone comes back to the tab.
+        setInterval(() => {
+          if (document.visibilityState === "visible") onChange();
+        }, 15 * 1000);
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible") onChange();
+        });
+      },
+    };
+  }
+
+  // Data lives in this browser only (for trying the dashboard out).
   function createLocalStore() {
     const KEY = "sop-dashboard:v2";
 
@@ -309,10 +364,26 @@
     };
   }
 
-  const store =
-    config.supabaseUrl && config.supabaseAnonKey && window.supabase
-      ? createSupabaseStore(config.supabaseUrl, config.supabaseAnonKey)
-      : createLocalStore();
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const tag = document.createElement("script");
+      tag.src = src;
+      tag.onload = resolve;
+      tag.onerror = () => reject(new Error("Couldn't load " + src));
+      document.head.append(tag);
+    });
+  }
+
+  async function createStore() {
+    if (config.backend === "php") return createPhpStore(config.apiUrl || "api/index.php");
+    if (config.backend === "supabase" && config.supabaseUrl && config.supabaseAnonKey) {
+      await loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js");
+      return createSupabaseStore(config.supabaseUrl, config.supabaseAnonKey);
+    }
+    return createLocalStore();
+  }
+
+  let store; // set in start()
 
   // -------------------------------------------------------------------------
   // UI
@@ -1054,15 +1125,28 @@
     render();
   }, 60 * 1000);
 
+  function showBanner(text, isError) {
+    el.banner.textContent = text;
+    el.banner.classList.toggle("banner-error", Boolean(isError));
+    el.banner.hidden = false;
+  }
+
   async function start() {
-    if (store.mode === "local") {
-      el.banner.hidden = false;
-    }
     render();
+    try {
+      store = await createStore();
+    } catch (e) {
+      store = createLocalStore();
+      showBanner("Couldn't connect to the shared database, so changes are saved in this browser only. " + e.message, true);
+    }
+    if (store.mode === "local" && el.banner.hidden) {
+      showBanner("Local mode: changes are saved in this browser only.");
+    }
     try {
       await store.init();
     } catch (e) {
-      showToast("Couldn't sync task list: " + e.message);
+      showBanner("Couldn't connect to the database: " + e.message, true);
+      return;
     }
     store.subscribe(scheduleRefresh);
     await refresh();

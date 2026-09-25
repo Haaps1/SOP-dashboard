@@ -1,12 +1,15 @@
-// Supabase connection settings.
+// Where the dashboard keeps its data.
 //
-// Paste your Project URL and anon public key from
-// Supabase dashboard -> Project Settings -> API.
-// The anon key is designed to be public (it ships to every browser); access is
-// controlled by the Row Level Security policies in supabase/schema.sql.
-//
-// Leave both empty to run in local mode (data saved only in this browser).
+//   "php"      - the PHP + MySQL API in the api/ folder, on your own hosting
+//                (e.g. Hostinger). Fill in api/config.php on the server.
+//   "supabase" - Supabase. Paste your Project URL and anon public key below
+//                (Supabase dashboard -> Project Settings -> API) and run
+//                supabase/schema.sql once.
+//   "local"    - this browser only, for trying the dashboard out.
 window.SOP_CONFIG = {
+  backend: "php",
+  apiUrl: "api/index.php",
+
   supabaseUrl: "",
   supabaseAnonKey: "",
 };
