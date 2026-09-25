@@ -4,7 +4,7 @@ A daily task tracker for the team that also serves as the SOP. It is a static si
 
 - Dark theme, with one tab per employee (Anil, Madhu, Manju, Harsha, Manju Designer)
 - The date shown large in the top right, with a date switcher (previous and next day, a calendar, and a Today button). Every day keeps its own record, so you can pick yesterday or any past date and see what was done.
-- Manju Designer's tab shows how many videos were finished on the selected date, under the date. This is set in `DONE_COUNTERS` in `tasks-seed.js`.
+- Manju Designer's tab has a **Videos Done** column (with − and + buttons) for each task, saved per day. The box under the date adds these up ("6 videos done today") and also shows how many tasks are finished. Which tabs get this is set in `DONE_COUNTERS` in `tasks-seed.js`.
 - A **Time Taken** column (end time minus start time; while a task is running it shows the time so far), plus a total for each person
 - Each task shows its name, start time, end time and status
 - Status is set automatically from the times:
@@ -94,6 +94,7 @@ If you add or delete tasks from the dashboard and don't change `SEED_VERSION`, n
 | `work_date` | date | The day. Together with `task_id`, this is the primary key. |
 | `start_time` | time | Null means not started that day |
 | `end_time` | time | Null means not finished that day |
+| `quantity` | int | How many items were done that day (the Videos Done column). Null or 0 or more. |
 | `status` | text | **Generated column**: `todo`, `in_progress` or `done`, calculated from the times. It is never written directly. |
 | `updated_at` | timestamptz | Maintained by a trigger |
 

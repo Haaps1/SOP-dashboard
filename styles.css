@@ -93,8 +93,9 @@ input[type="date"]:focus, .btn-step:focus-visible { outline: 2px solid var(--acc
   font-variant-numeric: tabular-nums;
 }
 .done-counter strong { font-size: 26px; line-height: 1; }
-.done-of { font-size: 15px; font-weight: 600; }
-.done-label { font-size: 13px; margin-left: 2px; }
+.done-counter { flex-wrap: wrap; justify-content: flex-end; max-width: 260px; }
+.done-label { font-size: 14px; font-weight: 600; }
+.done-sub { flex-basis: 100%; text-align: right; font-size: 12px; color: var(--muted); }
 
 .today {
   display: flex; align-items: center; gap: 12px;
@@ -164,6 +165,22 @@ input[type="date"]:focus, .btn-step:focus-visible { outline: 2px solid var(--acc
 .summary-chip strong { font-size: 20px; font-variant-numeric: tabular-nums; }
 .summary-total { color: var(--text); background: var(--surface-2); margin-left: auto; }
 
+.qty-wrap { display: flex; align-items: center; gap: 4px; }
+.btn-qty { width: 28px; height: 28px; font-size: 16px; }
+.btn-qty:disabled { opacity: 0.4; cursor: default; }
+.btn-qty:disabled:hover { border-color: var(--border); }
+input[type="number"] {
+  width: 52px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 6px; font: inherit; font-size: 14px; font-weight: 600;
+  text-align: center; font-variant-numeric: tabular-nums;
+  color-scheme: dark; -moz-appearance: textfield;
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 .taken-cell { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .taken-running { color: var(--progress); font-weight: 500; }
 .taken-none { color: var(--muted); font-weight: 400; }
@@ -180,6 +197,7 @@ input[type="date"]:focus, .btn-step:focus-visible { outline: 2px solid var(--acc
   text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--muted);
   padding: 8px 10px;
+  white-space: nowrap;
   border-bottom: 1px solid var(--border);
 }
 .tasks td {
@@ -282,6 +300,11 @@ input[type="time"]:focus, #add-input:focus { outline: 2px solid var(--accent); o
   .tasks .time-cell::before { content: attr(data-label); width: 40px; color: var(--muted); font-size: 13px; }
   .tasks .status-cell { grid-column: 1; }
   .tasks .taken-cell { grid-column: 2; text-align: right; align-self: center; }
+  .tasks .qty-cell { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; }
+  .tasks .status-cell, .tasks .taken-cell { order: 1; }
+  .tasks .qty-cell::before { content: attr(data-label); width: 40px; color: var(--muted); font-size: 13px; }
+  .done-counter { justify-content: flex-start; }
+  .done-sub { text-align: left; }
   .summary-total { margin-left: 0; }
   .today-day { font-size: 48px; }
   .date-panel { align-items: flex-start; }

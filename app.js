@@ -25,7 +25,7 @@
   }
 
   const STATUS_LABEL = { todo: "To Do", in_progress: "In Progress", done: "Done" };
-  const EMPTY_ENTRY = Object.freeze({ start_time: null, end_time: null });
+  const EMPTY_ENTRY = Object.freeze({ start_time: null, end_time: null, quantity: null });
 
   // "HH:MM:SS" (Postgres time) -> "HH:MM" for <input type="time">.
   function toInputTime(t) {
@@ -94,7 +94,7 @@
   //   listEntries(date)               -> Promise<Entry[]> for that day
   //   insertTask({employee,title,position})
   //   removeTask(id)                  -> also removes its history
-  //   saveEntry(taskId, date, {start_time, end_time})
+  //   saveEntry(taskId, date, {start_time, end_time, quantity})
   //   subscribe(onChange)             -> called when data changes elsewhere
   // -------------------------------------------------------------------------
 
@@ -122,7 +122,7 @@
         );
       },
       listEntries(date) {
-        return check(client.from("task_entries").select("task_id, start_time, end_time").eq("work_date", date));
+        return check(client.from("task_entries").select("task_id, start_time, end_time, quantity").eq("work_date", date));
       },
       insertTask(row) {
         return check(client.from("tasks").insert(row));
@@ -254,10 +254,11 @@
     dateToday: document.getElementById("date-today"),
     dateNote: document.getElementById("date-note"),
     doneCounter: document.getElementById("done-counter"),
+    qtyHead: document.getElementById("qty-head"),
   };
 
   let tasks = [];
-  let entries = new Map(); // task_id -> { start_time, end_time } for selectedDate
+  let entries = new Map(); // task_id -> { start_time, end_time, quantity } for selectedDate
   let active = readActiveTab();
   let todayStr = ymd(new Date());
   let selectedDate = todayStr;
@@ -313,7 +314,9 @@
     }
     if (date !== selectedDate) return; // the date changed while loading
     tasks = t;
-    entries = new Map(e.map((x) => [x.task_id, { start_time: x.start_time, end_time: x.end_time }]));
+    entries = new Map(
+      e.map((x) => [x.task_id, { start_time: x.start_time, end_time: x.end_time, quantity: x.quantity ?? null }])
+    );
     render();
   }
 
@@ -368,16 +371,17 @@
     const noun = DONE_COUNTERS[active];
     el.doneCounter.hidden = !noun;
     if (!noun) return;
-    const done = countStatuses(list).done;
+    const total = list.reduce((sum, t) => sum + (entryFor(t.id).quantity || 0), 0);
+    const finished = countStatuses(list).done;
     const n = document.createElement("strong");
-    n.textContent = done;
-    const of = document.createElement("span");
-    of.className = "done-of";
-    of.textContent = "/ " + list.length;
+    n.textContent = total;
     const label = document.createElement("span");
     label.className = "done-label";
     label.textContent = noun + " done " + (isToday() ? "today" : "on this day");
-    el.doneCounter.replaceChildren(n, of, label);
+    const sub = document.createElement("span");
+    sub.className = "done-sub";
+    sub.textContent = finished + " / " + list.length + " tasks finished";
+    el.doneCounter.replaceChildren(n, label, sub);
   }
 
   function renderTabs() {
@@ -469,6 +473,52 @@
     return td;
   }
 
+  // Tabs listed in DONE_COUNTERS get a per-task count column (e.g. videos).
+  function countsItems() {
+    return Boolean(DONE_COUNTERS[active]);
+  }
+
+  function quantityCell(task, entry) {
+    const td = document.createElement("td");
+    td.className = "qty-cell";
+    td.dataset.label = DONE_COUNTERS[active].replace(/^./, (c) => c.toUpperCase());
+    const wrap = document.createElement("div");
+    wrap.className = "qty-wrap";
+    const value = entry.quantity || 0;
+
+    const minus = document.createElement("button");
+    minus.type = "button";
+    minus.className = "btn-step btn-qty";
+    minus.textContent = "−";
+    minus.disabled = value <= 0;
+    minus.setAttribute("aria-label", "One less for " + task.title);
+    minus.addEventListener("click", () => setQuantity(task.id, value - 1));
+
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.step = "1";
+    input.inputMode = "numeric";
+    input.value = entry.quantity === null || entry.quantity === undefined ? "" : entry.quantity;
+    input.placeholder = "0";
+    input.setAttribute("aria-label", DONE_COUNTERS[active] + " done for " + task.title);
+    input.addEventListener("change", () => {
+      const n = parseInt(input.value, 10);
+      setQuantity(task.id, Number.isFinite(n) && n > 0 ? n : null);
+    });
+
+    const plus = document.createElement("button");
+    plus.type = "button";
+    plus.className = "btn-step btn-qty";
+    plus.textContent = "+";
+    plus.setAttribute("aria-label", "One more for " + task.title);
+    plus.addEventListener("click", () => setQuantity(task.id, value + 1));
+
+    wrap.append(minus, input, plus);
+    td.append(wrap);
+    return td;
+  }
+
   function renderRows(list) {
     el.rows.replaceChildren(
       ...list.map((task, i) => {
@@ -490,6 +540,8 @@
         pill.className = "pill status-" + status;
         pill.textContent = STATUS_LABEL[status];
         st.append(pill);
+
+        const qty = countsItems() ? quantityCell(task, entry) : null;
 
         const taken = document.createElement("td");
         taken.className = "taken-cell";
@@ -532,6 +584,7 @@
           timeCell(task, entry, "start_time"),
           timeCell(task, entry, "end_time"),
           st,
+          ...(qty ? [qty] : []),
           taken,
           actions
         );
@@ -546,7 +599,7 @@
     // Don't rebuild the table under someone who is mid-edit in a time field;
     // catch up once they leave it.
     const focused = document.activeElement;
-    if (focused && focused.type === "time" && el.rows.contains(focused)) {
+    if (focused && (focused.type === "time" || focused.type === "number") && el.rows.contains(focused)) {
       renderPending = true;
       return;
     }
@@ -555,6 +608,8 @@
     renderTabs();
     renderSummary(list);
     renderDoneCounter(list);
+    el.qtyHead.hidden = !countsItems();
+    if (countsItems()) el.qtyHead.textContent = DONE_COUNTERS[active].replace(/^./, (c) => c.toUpperCase()) + " Done";
     renderRows(list);
     el.addInput.placeholder = "Add a task for " + active + "…";
   }
@@ -563,13 +618,26 @@
     setTimeout(() => renderPending && render(), 0);
   });
 
-  function setTime(taskId, field, value) {
+  function saveEntryField(taskId, field, value) {
     const date = selectedDate;
     const next = { ...entryFor(taskId), [field]: value };
     mutate(
       () => entries.set(taskId, next),
-      () => store.saveEntry(taskId, date, { start_time: next.start_time, end_time: next.end_time })
+      () =>
+        store.saveEntry(taskId, date, {
+          start_time: next.start_time,
+          end_time: next.end_time,
+          quantity: next.quantity,
+        })
     );
+  }
+
+  function setTime(taskId, field, value) {
+    saveEntryField(taskId, field, value);
+  }
+
+  function setQuantity(taskId, value) {
+    saveEntryField(taskId, "quantity", value > 0 ? value : null);
   }
 
   function deleteTask(task) {

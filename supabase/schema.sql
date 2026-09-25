@@ -37,6 +37,8 @@ create table if not exists public.task_entries (
   work_date   date not null,
   start_time  time,
   end_time    time,
+  -- How many items were finished that day (e.g. videos). Optional.
+  quantity    integer check (quantity is null or quantity >= 0),
   -- Status is never set by hand; it is derived from the times.
   status      text generated always as (
                 case
@@ -48,6 +50,9 @@ create table if not exists public.task_entries (
   updated_at  timestamptz not null default now(),
   primary key (task_id, work_date)
 );
+
+alter table public.task_entries add column if not exists quantity integer
+  check (quantity is null or quantity >= 0);
 
 create index if not exists task_entries_work_date_idx
   on public.task_entries (work_date);
