@@ -1145,7 +1145,7 @@
     try {
       await store.init();
     } catch (e) {
-      showBanner("Couldn't connect to the database: " + e.message, true);
+      showBanner(e.message.startsWith("Can't connect") ? e.message : "Couldn't connect to the database: " + e.message, true);
       return;
     }
     store.subscribe(scheduleRefresh);

@@ -54,7 +54,17 @@ try {
     );
 } catch (PDOException $e) {
     error_log('SOP dashboard API: ' . $e->getMessage());
-    fail("Can't connect to the database. Check the details in api/config.php.", 500);
+    // Say which setting is wrong, without echoing any of the values.
+    preg_match('/\[(\d{4})\]/', $e->getMessage(), $m);
+    $hints = [
+        '1044' => "the database user doesn't have access to this database. In hPanel's database list, make sure db_user belongs to db_name.",
+        '1045' => "the username or password was refused. Check db_user (the full name with the u123..._ prefix) and db_pass.",
+        '1049' => "no database with that name exists. Check db_name (the full name with the u123..._ prefix).",
+        '2002' => "the database server couldn't be reached. Check db_host (normally localhost).",
+        '2005' => "the database server name wasn't recognised. Check db_host (normally localhost).",
+    ];
+    $why = $hints[$m[1] ?? ''] ?? 'check the details in api/config.php.';
+    fail("Can't connect to the database: " . $why, 500);
 }
 
 $input = json_decode(file_get_contents('php://input') ?: '', true);
