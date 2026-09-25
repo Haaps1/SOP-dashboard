@@ -1,0 +1,23 @@
+# Hostinger (Apache / LiteSpeed) settings for the Team SOP Dashboard.
+
+RewriteEngine On
+
+# Always use HTTPS.
+RewriteCond %{HTTPS} !=on
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# Make browsers check for a newer version, so updates show up straight away.
+<IfModule mod_headers.c>
+  <FilesMatch "\.(html|js|css)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+</IfModule>
+
+# Don't serve repository files that aren't part of the site
+# (these are present when deploying with Hostinger's Git tool).
+<FilesMatch "\.(md|sql)$">
+  Require all denied
+</FilesMatch>
+RedirectMatch 404 /(\.git|supabase)(/|$)
+
+Options -Indexes

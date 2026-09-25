@@ -53,14 +53,31 @@ The first time the page loads, it fills the `tasks` table from `tasks-seed.js`.
 
 If `config.js` is left empty, the dashboard runs in **local mode**: a yellow banner appears and data is saved only in that browser. This is handy for trying it out.
 
-### 3. Host it on your domain
+### 3. Host it on Hostinger
 
-The files are all static, so any static host works. Upload the repo folder as it is.
+The site is five static files plus `.htaccess`. It needs no PHP, database or Node on Hostinger, because the data lives in Supabase.
 
-- **Netlify / Cloudflare Pages / Vercel:** connect this GitHub repo. There is no build command, and the publish directory is the repo root. Then add your custom domain in the host's domain settings.
-- **GitHub Pages:** open Settings, then Pages, deploy from the branch root, and set the custom domain.
+**Option A: upload the files (simplest)**
 
-To preview it on your own computer, run `python3 -m http.server` in this folder and open http://localhost:8000.
+1. In hPanel, go to **Websites**, choose your site, then **File Manager**.
+2. Open `public_html`. For a subdomain such as `tasks.yourdomain.com`, first create it under **Domains → Subdomains**, then open the folder it creates.
+3. Upload `index.html`, `styles.css`, `app.js`, `config.js`, `tasks-seed.js` and `.htaccess`. `.htaccess` is a hidden file; if you use the ready-made zip, upload it and choose **Extract**.
+4. Open the domain in a browser.
+
+To update the site later, upload the changed files again.
+
+**Option B: deploy from GitHub (updates with one click)**
+
+1. In hPanel, open **Advanced → Git**.
+2. Repository: `https://github.com/Haaps1/SOP-dashboard.git`. Branch: the branch that holds the site. Directory: leave it empty for `public_html`, or enter a folder name.
+   - If the repository is private, first copy the SSH key Hostinger shows on that page. Add it in GitHub under **Settings → Deploy keys**, then use the SSH URL `git@github.com:Haaps1/SOP-dashboard.git`.
+   - The target folder must be empty the first time.
+3. Click **Create**, then **Deploy**.
+4. Optional: copy the **Auto deployment** webhook URL into GitHub under **Settings → Webhooks**, so that every push updates the site.
+
+`.htaccess` keeps the README, `supabase/` and `.git` from being served, forces HTTPS, and makes sure browsers pick up new versions.
+
+**Turn on SSL.** In hPanel, open **Security → SSL** and make sure the domain (or subdomain) has an active certificate. Hostinger's free one is fine.
 
 ## Editing the default task list
 
