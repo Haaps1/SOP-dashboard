@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --bg: #0b0e14;
   --surface: #131823;
   --surface-2: #1a2130;
@@ -169,6 +170,11 @@ input[type="time"]:focus, #add-input:focus { outline: 2px solid var(--accent); o
 .btn-delete { width: 32px; height: 32px; }
 .btn-icon:hover { color: var(--text); background: var(--surface-2); }
 .btn-delete:hover { color: var(--todo); background: var(--todo-bg); }
+.btn-delete.armed {
+  width: auto; padding: 0 10px;
+  color: var(--todo); background: var(--todo-bg);
+  font: inherit; font-size: 12px; font-weight: 600; white-space: nowrap;
+}
 
 .pill {
   display: inline-block;

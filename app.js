@@ -342,7 +342,13 @@
         del.setAttribute("aria-label", "Delete " + task.title);
         del.innerHTML =
           '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 12H7L6 9zm4 2v8h2v-8h-2zm4 0v8h2v-8h-2z"/></svg>';
-        del.addEventListener("click", () => deleteTask(task));
+        del.addEventListener("click", () => {
+          // Two-step delete: first click arms the button, second click deletes.
+          if (del.classList.contains("armed")) return deleteTask(task);
+          del.classList.add("armed");
+          del.textContent = "Delete?";
+          setTimeout(() => render(), 3000);
+        });
         actions.append(del);
 
         tr.append(num, title, timeCell(task, "start_time"), timeCell(task, "end_time"), st, actions);
@@ -383,7 +389,6 @@
   }
 
   function deleteTask(task) {
-    if (!confirm('Delete "' + task.title + '" from ' + task.employee + "'s tasks?")) return;
     mutate(
       () => (tasks = tasks.filter((t) => t.id !== task.id)),
       () => store.remove(task.id)
