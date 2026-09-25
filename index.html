@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Team SOP Dashboard</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2322c55e'/><path d='M9 16.5l4.5 4.5L23 11.5' stroke='%23fff' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="banner" class="banner" hidden>
+      Local mode: changes are saved in this browser only. Add your Supabase keys to <code>config.js</code> to share live.
+    </div>
+
+    <main class="container">
+      <header class="header">
+        <div>
+          <h1>Team SOP Dashboard</h1>
+          <p class="subtitle">Daily tasks and standard procedures. Status updates automatically from start and end times.</p>
+        </div>
+        <ul class="legend" aria-label="Status legend">
+          <li><span class="dot status-todo"></span>To Do: no start time</li>
+          <li><span class="dot status-in_progress"></span>In Progress: started, not ended</li>
+          <li><span class="dot status-done"></span>Done: end time set</li>
+        </ul>
+      </header>
+
+      <nav id="tabs" class="tabs" role="tablist" aria-label="Employees"></nav>
+
+      <section class="panel">
+        <div id="summary" class="summary"></div>
+
+        <table class="tasks">
+          <thead>
+            <tr>
+              <th class="num">#</th>
+              <th>Task</th>
+              <th>Start Time</th>
+              <th>End Time</th>
+              <th>Status</th>
+              <th class="actions"><span class="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="task-rows"></tbody>
+        </table>
+        <p id="empty" class="empty" hidden>No tasks yet. Add one below.</p>
+
+        <form id="add-form" class="add-form" autocomplete="off">
+          <input id="add-input" type="text" maxlength="120" placeholder="Add a task…" aria-label="New task title" />
+          <button type="submit" class="btn-primary">Add Task</button>
+        </form>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+    <script src="config.js"></script>
+    <script src="tasks-seed.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
