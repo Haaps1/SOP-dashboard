@@ -27,13 +27,23 @@
             <li><span class="dot status-done"></span>Done: end time set</li>
           </ul>
         </div>
-        <time id="today" class="today">
-          <span id="today-day" class="today-day"></span>
-          <span class="today-rest">
-            <span id="today-weekday" class="today-weekday"></span>
-            <span id="today-month" class="today-month"></span>
-          </span>
-        </time>
+        <div class="date-panel">
+          <span id="date-note" class="date-note"></span>
+          <time id="today" class="today">
+            <span id="today-day" class="today-day"></span>
+            <span class="today-rest">
+              <span id="today-weekday" class="today-weekday"></span>
+              <span id="today-month" class="today-month"></span>
+            </span>
+          </time>
+          <div class="date-controls">
+            <button type="button" id="date-prev" class="btn-step" aria-label="Previous day">&#8249;</button>
+            <input type="date" id="date-picker" aria-label="Choose a date" />
+            <button type="button" id="date-next" class="btn-step" aria-label="Next day">&#8250;</button>
+            <button type="button" id="date-today" class="btn-now" hidden>Today</button>
+          </div>
+          <div id="done-counter" class="done-counter" hidden></div>
+        </div>
       </header>
 
       <nav id="tabs" class="tabs" role="tablist" aria-label="Employees"></nav>

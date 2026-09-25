@@ -3,6 +3,7 @@
 
   const EMPLOYEES = window.EMPLOYEES;
   const SEED_VERSION = window.SEED_VERSION;
+  const DONE_COUNTERS = window.DONE_COUNTERS || {};
   const config = window.SOP_CONFIG || {};
 
   // Flatten SEED_TASKS into rows: { employee, title, position }.
@@ -16,14 +17,15 @@
     return rows;
   }
 
-  // Status is derived, never stored by the UI.
-  function statusOf(task) {
-    if (task.end_time) return "done";
-    if (task.start_time) return "in_progress";
+  // Status is derived from a day's entry, never stored by the UI.
+  function statusOf(entry) {
+    if (entry.end_time) return "done";
+    if (entry.start_time) return "in_progress";
     return "todo";
   }
 
   const STATUS_LABEL = { todo: "To Do", in_progress: "In Progress", done: "Done" };
+  const EMPTY_ENTRY = Object.freeze({ start_time: null, end_time: null });
 
   // "HH:MM:SS" (Postgres time) -> "HH:MM" for <input type="time">.
   function toInputTime(t) {
@@ -41,12 +43,17 @@
     return d.getHours() * 60 + d.getMinutes();
   }
 
-  // Minutes from start to end (or to now, while in progress). A task that
-  // ends "earlier" than it started is treated as running past midnight.
-  function minutesTaken(task) {
-    const start = toMinutes(task.start_time);
+  // Minutes from start to end, or to now while a task for today is running.
+  // An end "earlier" than the start is treated as running past midnight.
+  // Returns null when there is nothing to measure.
+  function minutesTaken(entry, isToday) {
+    const start = toMinutes(entry.start_time);
     if (start === null) return null;
-    const end = task.end_time ? toMinutes(task.end_time) : nowMinutes();
+    let end = toMinutes(entry.end_time);
+    if (end === null) {
+      if (!isToday) return null;
+      end = nowMinutes();
+    }
     let diff = end - start;
     if (diff < 0) diff += 24 * 60;
     return diff;
@@ -64,14 +71,31 @@
     return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
   }
 
+  // Local calendar date as "YYYY-MM-DD" (toISOString would give the UTC date).
+  function ymd(d) {
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+
+  function parseYmd(s) {
+    const [y, m, d] = s.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  }
+
+  function addDays(s, n) {
+    const d = parseYmd(s);
+    d.setDate(d.getDate() + n);
+    return ymd(d);
+  }
+
   // -------------------------------------------------------------------------
   // Data stores. Both expose the same interface:
-  //   init()                 -> apply seed version, resolve when ready
-  //   list()                 -> Promise<Task[]>
-  //   insert({employee,title,position})
-  //   update(id, patch)
-  //   remove(id)
-  //   subscribe(onChange)    -> called when data changes elsewhere
+  //   init()                          -> apply seed version, resolve when ready
+  //   listTasks()                     -> Promise<Task[]>
+  //   listEntries(date)               -> Promise<Entry[]> for that day
+  //   insertTask({employee,title,position})
+  //   removeTask(id)                  -> also removes its history
+  //   saveEntry(taskId, date, {start_time, end_time})
+  //   subscribe(onChange)             -> called when data changes elsewhere
   // -------------------------------------------------------------------------
 
   function createSupabaseStore(url, key) {
@@ -88,28 +112,36 @@
       async init() {
         await check(client.rpc("apply_seed", { p_version: SEED_VERSION, p_tasks: seedRows() }));
       },
-      list() {
+      listTasks() {
         return check(
           client
             .from("tasks")
-            .select("id, employee, title, position, start_time, end_time, created_at")
+            .select("id, employee, title, position, created_at")
             .order("position", { ascending: true })
             .order("created_at", { ascending: true })
         );
       },
-      insert(row) {
+      listEntries(date) {
+        return check(client.from("task_entries").select("task_id, start_time, end_time").eq("work_date", date));
+      },
+      insertTask(row) {
         return check(client.from("tasks").insert(row));
       },
-      update(id, patch) {
-        return check(client.from("tasks").update(patch).eq("id", id));
-      },
-      remove(id) {
+      removeTask(id) {
         return check(client.from("tasks").delete().eq("id", id));
+      },
+      saveEntry(taskId, date, times) {
+        return check(
+          client
+            .from("task_entries")
+            .upsert({ task_id: taskId, work_date: date, ...times }, { onConflict: "task_id,work_date" })
+        );
       },
       subscribe(onChange) {
         client
-          .channel("tasks-changes")
+          .channel("dashboard-changes")
           .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, onChange)
+          .on("postgres_changes", { event: "*", schema: "public", table: "task_entries" }, onChange)
           .subscribe();
       },
     };
@@ -117,21 +149,26 @@
 
   // Fallback used until Supabase is configured: data lives in this browser only.
   function createLocalStore() {
-    const KEY = "sop-dashboard:v1";
+    const KEY = "sop-dashboard:v2";
 
     function load() {
       try {
-        return JSON.parse(localStorage.getItem(KEY)) || { seedVersion: 0, tasks: [] };
-      } catch (e) {
-        return { seedVersion: 0, tasks: [] };
-      }
+        const s = JSON.parse(localStorage.getItem(KEY));
+        if (s && Array.isArray(s.tasks) && s.entries) return s;
+      } catch (e) {}
+      return { seedVersion: 0, tasks: [], entries: {} };
     }
-    function save(state) {
+    function save() {
       try {
         localStorage.setItem(KEY, JSON.stringify(state));
       } catch (e) {
         /* storage unavailable: changes last for this page view only */
       }
+    }
+    function newId() {
+      return window.crypto && crypto.randomUUID
+        ? crypto.randomUUID()
+        : Date.now().toString(36) + Math.random().toString(36).slice(2);
     }
     let state = load();
 
@@ -139,37 +176,44 @@
       mode: "local",
       async init() {
         if (state.seedVersion >= SEED_VERSION) return;
-        // Same rule as apply_seed(): keep times for tasks that still exist.
-        const old = state.tasks;
-        state = {
-          seedVersion: SEED_VERSION,
-          tasks: seedRows().map((r) => {
-            const prev = old.find((o) => o.employee === r.employee && o.title === r.title);
-            return {
-              ...r,
-              id: crypto.randomUUID(),
-              start_time: prev ? prev.start_time : null,
-              end_time: prev ? prev.end_time : null,
-            };
-          }),
-        };
-        save(state);
+        // Same rules as apply_seed() in schema.sql.
+        const seed = seedRows();
+        const inSeed = (t) => seed.some((s) => s.employee === t.employee && s.title === t.title);
+        const removed = state.tasks.filter((t) => t.from_seed && !inSeed(t)).map((t) => t.id);
+        state.tasks = state.tasks.filter((t) => !removed.includes(t.id));
+        for (const date of Object.keys(state.entries)) {
+          removed.forEach((id) => delete state.entries[date][id]);
+        }
+        for (const s of seed) {
+          const existing = state.tasks.find((t) => t.employee === s.employee && t.title === s.title);
+          if (existing) Object.assign(existing, { position: s.position, from_seed: true });
+          else state.tasks.push({ ...s, id: newId(), from_seed: true, created_at: new Date().toISOString() });
+        }
+        state.seedVersion = SEED_VERSION;
+        save();
       },
-      async list() {
-        return state.tasks.slice().sort((a, b) => a.position - b.position);
+      async listTasks() {
+        return state.tasks
+          .slice()
+          .sort((a, b) => a.position - b.position || String(a.created_at).localeCompare(String(b.created_at)));
       },
-      async insert(row) {
-        state.tasks.push({ ...row, id: crypto.randomUUID(), start_time: null, end_time: null });
-        save(state);
+      async listEntries(date) {
+        const day = state.entries[date] || {};
+        return Object.keys(day).map((taskId) => ({ task_id: taskId, ...day[taskId] }));
       },
-      async update(id, patch) {
-        const t = state.tasks.find((x) => x.id === id);
-        if (t) Object.assign(t, patch);
-        save(state);
+      async insertTask(row) {
+        state.tasks.push({ ...row, id: newId(), from_seed: false, created_at: new Date().toISOString() });
+        save();
       },
-      async remove(id) {
-        state.tasks = state.tasks.filter((x) => x.id !== id);
-        save(state);
+      async removeTask(id) {
+        state.tasks = state.tasks.filter((t) => t.id !== id);
+        for (const date of Object.keys(state.entries)) delete state.entries[date][id];
+        save();
+      },
+      async saveEntry(taskId, date, times) {
+        state.entries[date] = state.entries[date] || {};
+        state.entries[date][taskId] = { ...times };
+        save();
       },
       subscribe(onChange) {
         window.addEventListener("storage", (e) => {
@@ -200,11 +244,32 @@
     addInput: document.getElementById("add-input"),
     banner: document.getElementById("banner"),
     toast: document.getElementById("toast"),
+    today: document.getElementById("today"),
+    todayDay: document.getElementById("today-day"),
+    todayWeekday: document.getElementById("today-weekday"),
+    todayMonth: document.getElementById("today-month"),
+    datePicker: document.getElementById("date-picker"),
+    datePrev: document.getElementById("date-prev"),
+    dateNext: document.getElementById("date-next"),
+    dateToday: document.getElementById("date-today"),
+    dateNote: document.getElementById("date-note"),
+    doneCounter: document.getElementById("done-counter"),
   };
 
   let tasks = [];
+  let entries = new Map(); // task_id -> { start_time, end_time } for selectedDate
   let active = readActiveTab();
+  let todayStr = ymd(new Date());
+  let selectedDate = todayStr;
   let renderPending = false;
+
+  function isToday() {
+    return selectedDate === todayStr;
+  }
+
+  function entryFor(taskId) {
+    return entries.get(taskId) || EMPTY_ENTRY;
+  }
 
   function readActiveTab() {
     try {
@@ -222,6 +287,14 @@
     render();
   }
 
+  function setDate(date) {
+    if (!date || date === selectedDate) return;
+    selectedDate = date;
+    entries = new Map();
+    render();
+    refresh();
+  }
+
   function showToast(msg) {
     el.toast.textContent = msg;
     el.toast.hidden = false;
@@ -230,12 +303,17 @@
   }
 
   async function refresh() {
+    const date = selectedDate;
+    let t, e;
     try {
-      tasks = await store.list();
-    } catch (e) {
-      showToast("Couldn't load tasks: " + e.message);
+      [t, e] = await Promise.all([store.listTasks(), store.listEntries(date)]);
+    } catch (err) {
+      showToast("Couldn't load tasks: " + err.message);
       return;
     }
+    if (date !== selectedDate) return; // the date changed while loading
+    tasks = t;
+    entries = new Map(e.map((x) => [x.task_id, { start_time: x.start_time, end_time: x.end_time }]));
     render();
   }
 
@@ -264,8 +342,42 @@
 
   function countStatuses(list) {
     const c = { todo: 0, in_progress: 0, done: 0 };
-    list.forEach((t) => c[statusOf(t)]++);
+    list.forEach((t) => c[statusOf(entryFor(t.id))]++);
     return c;
+  }
+
+  function renderDate() {
+    const d = parseYmd(selectedDate);
+    el.todayDay.textContent = d.getDate();
+    el.todayWeekday.textContent = d.toLocaleDateString("en-GB", { weekday: "long" });
+    el.todayMonth.textContent = d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+    el.today.setAttribute("datetime", selectedDate);
+    el.datePicker.value = selectedDate;
+    el.dateToday.hidden = isToday();
+    if (isToday()) {
+      el.dateNote.textContent = "Today";
+    } else if (selectedDate === addDays(todayStr, -1)) {
+      el.dateNote.textContent = "Yesterday";
+    } else {
+      el.dateNote.textContent = selectedDate < todayStr ? "Past date" : "Upcoming date";
+    }
+    el.dateNote.classList.toggle("is-other-day", !isToday());
+  }
+
+  function renderDoneCounter(list) {
+    const noun = DONE_COUNTERS[active];
+    el.doneCounter.hidden = !noun;
+    if (!noun) return;
+    const done = countStatuses(list).done;
+    const n = document.createElement("strong");
+    n.textContent = done;
+    const of = document.createElement("span");
+    of.className = "done-of";
+    of.textContent = "/ " + list.length;
+    const label = document.createElement("span");
+    label.className = "done-label";
+    label.textContent = noun + " done " + (isToday() ? "today" : "on this day");
+    el.doneCounter.replaceChildren(n, of, label);
   }
 
   function renderTabs() {
@@ -293,8 +405,9 @@
   function renderSummary(list) {
     const c = countStatuses(list);
     const total = list
-      .filter((t) => t.start_time && t.end_time)
-      .reduce((sum, t) => sum + minutesTaken(t), 0);
+      .map((t) => entryFor(t.id))
+      .filter((e) => e.start_time && e.end_time)
+      .reduce((sum, e) => sum + minutesTaken(e, false), 0);
     const totalChip = document.createElement("div");
     totalChip.className = "summary-chip summary-total";
     const totalN = document.createElement("strong");
@@ -318,7 +431,7 @@
     );
   }
 
-  function timeCell(task, field) {
+  function timeCell(task, entry, field) {
     const td = document.createElement("td");
     td.className = "time-cell";
     td.dataset.label = field === "start_time" ? "Start" : "End";
@@ -327,18 +440,21 @@
 
     const input = document.createElement("input");
     input.type = "time";
-    input.value = toInputTime(task[field]);
+    input.value = toInputTime(entry[field]);
     input.setAttribute("aria-label", (field === "start_time" ? "Start time for " : "End time for ") + task.title);
     input.addEventListener("change", () => setTime(task.id, field, input.value || null));
     wrap.append(input);
 
-    if (!task[field]) {
-      const now = document.createElement("button");
-      now.type = "button";
-      now.className = "btn-now";
-      now.textContent = "Now";
-      now.addEventListener("click", () => setTime(task.id, field, nowHHMM()));
-      wrap.append(now);
+    if (!entry[field]) {
+      // "Now" only makes sense for today; other days are filled in by hand.
+      if (isToday()) {
+        const now = document.createElement("button");
+        now.type = "button";
+        now.className = "btn-now";
+        now.textContent = "Now";
+        now.addEventListener("click", () => setTime(task.id, field, nowHHMM()));
+        wrap.append(now);
+      }
     } else {
       const clear = document.createElement("button");
       clear.type = "button";
@@ -357,7 +473,8 @@
     el.rows.replaceChildren(
       ...list.map((task, i) => {
         const tr = document.createElement("tr");
-        const status = statusOf(task);
+        const entry = entryFor(task.id);
+        const status = statusOf(entry);
 
         const num = document.createElement("td");
         num.className = "num";
@@ -377,15 +494,18 @@
         const taken = document.createElement("td");
         taken.className = "taken-cell";
         taken.dataset.label = "Taken";
-        const mins = minutesTaken(task);
-        if (mins === null) {
-          taken.textContent = "—";
-          taken.classList.add("taken-none");
-        } else if (status === "done") {
+        const mins = minutesTaken(entry, isToday());
+        if (status === "done" && mins !== null) {
           taken.textContent = formatDuration(mins);
-        } else {
+        } else if (status === "in_progress" && mins !== null) {
           taken.textContent = formatDuration(mins) + " so far";
           taken.classList.add("taken-running");
+        } else if (status === "in_progress") {
+          taken.textContent = "No end time";
+          taken.classList.add("taken-none");
+        } else {
+          taken.textContent = "—";
+          taken.classList.add("taken-none");
         }
 
         const actions = document.createElement("td");
@@ -406,7 +526,15 @@
         });
         actions.append(del);
 
-        tr.append(num, title, timeCell(task, "start_time"), timeCell(task, "end_time"), st, taken, actions);
+        tr.append(
+          num,
+          title,
+          timeCell(task, entry, "start_time"),
+          timeCell(task, entry, "end_time"),
+          st,
+          taken,
+          actions
+        );
         return tr;
       })
     );
@@ -414,6 +542,7 @@
   }
 
   function render() {
+    renderDate();
     // Don't rebuild the table under someone who is mid-edit in a time field;
     // catch up once they leave it.
     const focused = document.activeElement;
@@ -425,6 +554,7 @@
     const list = tasksFor(active);
     renderTabs();
     renderSummary(list);
+    renderDoneCounter(list);
     renderRows(list);
     el.addInput.placeholder = "Add a task for " + active + "…";
   }
@@ -433,20 +563,19 @@
     setTimeout(() => renderPending && render(), 0);
   });
 
-  function setTime(id, field, value) {
-    const task = tasks.find((t) => t.id === id);
-    if (!task) return;
-    const patch = { [field]: value };
+  function setTime(taskId, field, value) {
+    const date = selectedDate;
+    const next = { ...entryFor(taskId), [field]: value };
     mutate(
-      () => Object.assign(task, patch),
-      () => store.update(id, patch)
+      () => entries.set(taskId, next),
+      () => store.saveEntry(taskId, date, { start_time: next.start_time, end_time: next.end_time })
     );
   }
 
   function deleteTask(task) {
     mutate(
       () => (tasks = tasks.filter((t) => t.id !== task.id)),
-      () => store.remove(task.id)
+      () => store.removeTask(task.id)
     );
   }
 
@@ -458,7 +587,7 @@
     const position = list.length ? Math.max(...list.map((t) => t.position)) + 1 : 0;
     el.addInput.value = "";
     try {
-      await store.insert({ employee: active, title, position });
+      await store.insertTask({ employee: active, title, position });
     } catch (err) {
       showToast("Couldn't add task: " + err.message);
       el.addInput.value = title;
@@ -467,25 +596,28 @@
     refresh();
   });
 
-  function renderDate() {
-    const d = new Date();
-    document.getElementById("today-day").textContent = d.getDate();
-    document.getElementById("today-weekday").textContent = d.toLocaleDateString("en-GB", { weekday: "long" });
-    document.getElementById("today-month").textContent = d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-    document.getElementById("today").setAttribute("datetime", d.toISOString().slice(0, 10));
-  }
+  el.datePicker.addEventListener("change", () => setDate(el.datePicker.value));
+  el.datePrev.addEventListener("click", () => setDate(addDays(selectedDate, -1)));
+  el.dateNext.addEventListener("click", () => setDate(addDays(selectedDate, 1)));
+  el.dateToday.addEventListener("click", () => setDate(todayStr));
 
-  // Keep "so far" durations and the date current.
+  // Every minute: keep "so far" durations current, and roll over at midnight
+  // (a dashboard left open on today moves on to the new day).
   setInterval(() => {
-    renderDate();
+    const now = ymd(new Date());
+    if (now !== todayStr) {
+      const wasToday = isToday();
+      todayStr = now;
+      if (wasToday) return setDate(now);
+    }
     render();
   }, 60 * 1000);
 
   async function start() {
-    renderDate();
     if (store.mode === "local") {
       el.banner.hidden = false;
     }
+    render();
     try {
       await store.init();
     } catch (e) {

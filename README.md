@@ -3,7 +3,8 @@
 A daily task tracker for the team that also serves as the SOP. It is a static site (plain HTML, CSS and JS with no build step) backed by Supabase, so it can be hosted on your own domain.
 
 - Dark theme, with one tab per employee (Anil, Madhu, Manju, Harsha, Manju Designer)
-- Today's date shown large in the top right
+- The date shown large in the top right, with a date switcher (previous and next day, a calendar, and a Today button). Every day keeps its own record, so you can pick yesterday or any past date and see what was done.
+- Manju Designer's tab shows how many videos were finished on the selected date, under the date. This is set in `DONE_COUNTERS` in `tasks-seed.js`.
 - A **Time Taken** column (end time minus start time; while a task is running it shows the time so far), plus a total for each person
 - Each task shows its name, start time, end time and status
 - Status is set automatically from the times:
@@ -66,14 +67,15 @@ To preview it on your own computer, run `python3 -m http.server` in this folder 
 
 On the next page load, the database is rewritten to match the new list. The rewrite happens in one transaction inside the `apply_seed` database function, so two people opening the page at the same moment can't seed it twice.
 
-- Tasks with the same employee and the same title **keep their start and end times**.
-- Tasks added from the dashboard (not listed in `tasks-seed.js`) are **removed** by a reseed. If a task should stay, add it to `tasks-seed.js` first.
+- Tasks that are still in the list, with the same employee and title, keep their full daily history.
+- Tasks taken out of `tasks-seed.js` are removed, together with their history.
+- Tasks added from the dashboard are never touched by a reseed.
 
 If you add or delete tasks from the dashboard and don't change `SEED_VERSION`, nothing is overwritten.
 
 ## Database
 
-`tasks` table:
+`tasks` is the standing task list. It is the same every day.
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -81,10 +83,21 @@ If you add or delete tasks from the dashboard and don't change `SEED_VERSION`, n
 | `employee` | text | `Anil`, `Madhu`, `Manju`, `Harsha`, `Manju Designer` |
 | `title` | text | Task name |
 | `position` | int | Sort order within an employee |
-| `start_time` | time | Null means not started |
-| `end_time` | time | Null means not finished |
-| `status` | text | **Generated column**: `todo`, `in_progress` or `done`, calculated from the times. It is never written directly. |
+| `from_seed` | boolean | `true` if the task comes from `tasks-seed.js`, `false` if it was added from the dashboard |
 | `created_at`, `updated_at` | timestamptz | `updated_at` is maintained by a trigger |
+
+`task_entries` holds one row per task per day. This is the history the date switcher reads.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `task_id` | uuid | The task. Deleting the task deletes its entries. |
+| `work_date` | date | The day. Together with `task_id`, this is the primary key. |
+| `start_time` | time | Null means not started that day |
+| `end_time` | time | Null means not finished that day |
+| `status` | text | **Generated column**: `todo`, `in_progress` or `done`, calculated from the times. It is never written directly. |
+| `updated_at` | timestamptz | Maintained by a trigger |
+
+A day with no entry for a task shows that task as **To Do**. Each new day therefore starts with everything To Do, and nothing has to be reset.
 
 `app_meta` holds the current `seed_version`. Browsers can't read or write this table. Only `apply_seed` uses it.
 

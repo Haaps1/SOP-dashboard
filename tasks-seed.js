@@ -8,6 +8,12 @@ window.SEED_VERSION = 2;
 
 window.EMPLOYEES = ["Anil", "Madhu", "Manju", "Harsha", "Manju Designer"];
 
+// Employees who get a "done" counter under the date, and what to call the
+// items being counted.
+window.DONE_COUNTERS = {
+  "Manju Designer": "videos",
+};
+
 window.SEED_TASKS = {
   Anil: [
     "SMM - HAAPS.AI / HAAPS.Digital",

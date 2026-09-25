@@ -1,6 +1,11 @@
 -- Team SOP Dashboard: Supabase schema
 -- Run this once in Supabase dashboard -> SQL Editor -> New query -> Run.
 -- It is safe to re-run.
+--
+-- Data model:
+--   tasks         the standing task list for each employee (same every day)
+--   task_entries  one row per task per day with that day's start/end times,
+--                 so every date keeps its own history
 
 -- ---------------------------------------------------------------------------
 -- Tables
@@ -11,6 +16,25 @@ create table if not exists public.tasks (
   employee    text not null,
   title       text not null check (length(trim(title)) > 0),
   position    integer not null default 0,
+  -- true for tasks that come from tasks-seed.js; false for tasks added from
+  -- the dashboard (a reseed never removes those).
+  from_seed   boolean not null default false,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+
+-- Upgrade from the first version of this schema, where times lived on tasks.
+alter table public.tasks add column if not exists from_seed boolean not null default false;
+alter table public.tasks drop column if exists status;
+alter table public.tasks drop column if exists start_time;
+alter table public.tasks drop column if exists end_time;
+
+create index if not exists tasks_employee_position_idx
+  on public.tasks (employee, position);
+
+create table if not exists public.task_entries (
+  task_id     uuid not null references public.tasks (id) on delete cascade,
+  work_date   date not null,
   start_time  time,
   end_time    time,
   -- Status is never set by hand; it is derived from the times.
@@ -21,12 +45,12 @@ create table if not exists public.tasks (
                   else 'todo'
                 end
               ) stored,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
+  updated_at  timestamptz not null default now(),
+  primary key (task_id, work_date)
 );
 
-create index if not exists tasks_employee_position_idx
-  on public.tasks (employee, position);
+create index if not exists task_entries_work_date_idx
+  on public.task_entries (work_date);
 
 -- Key/value store for app bookkeeping (currently just the seed version).
 create table if not exists public.app_meta (
@@ -47,16 +71,26 @@ create trigger tasks_touch_updated_at
   before update on public.tasks
   for each row execute function public.touch_updated_at();
 
+drop trigger if exists task_entries_touch_updated_at on public.task_entries;
+create trigger task_entries_touch_updated_at
+  before update on public.task_entries
+  for each row execute function public.touch_updated_at();
+
 -- ---------------------------------------------------------------------------
 -- Seed versioning
 --
 -- The dashboard calls apply_seed(SEED_VERSION, tasks) on every load. If the
--- stored version is older, the task list is replaced with the new one in a
--- single transaction (so two people opening the page at once can't double-seed).
--- Tasks whose employee + title still exist keep their start/end times.
+-- stored version is older, the seeded task list is brought in line with the
+-- new one in a single transaction:
+--   * seeded tasks no longer in the list are removed (with their history)
+--   * tasks whose employee + title still exist keep their id and history,
+--     and get the new position
+--   * new tasks are added
+--   * tasks added from the dashboard are left alone
 -- ---------------------------------------------------------------------------
 
-create or replace function public.apply_seed(p_version integer, p_tasks jsonb)
+drop function if exists public.apply_seed(integer, jsonb);
+create function public.apply_seed(p_version integer, p_tasks jsonb)
 returns boolean
 language plpgsql
 security definer
@@ -74,18 +108,22 @@ begin
     return false;
   end if;
 
-  with old as (
-    delete from tasks where true
-    returning employee, title, start_time, end_time
-  )
-  insert into tasks (employee, title, position, start_time, end_time)
-  select t.employee, t.title, t.position, o.start_time, o.end_time
-  from jsonb_to_recordset(p_tasks) as t(employee text, title text, position integer)
-  left join lateral (
-    select start_time, end_time from old
-    where old.employee = t.employee and old.title = t.title
-    limit 1
-  ) o on true;
+  create temp table new_seed on commit drop as
+    select * from jsonb_to_recordset(p_tasks) as t(employee text, title text, position integer);
+
+  delete from tasks t
+  where t.from_seed
+    and not exists (select 1 from new_seed n where n.employee = t.employee and n.title = t.title);
+
+  update tasks t
+  set position = n.position, from_seed = true
+  from new_seed n
+  where n.employee = t.employee and n.title = t.title;
+
+  insert into tasks (employee, title, position, from_seed)
+  select n.employee, n.title, n.position, true
+  from new_seed n
+  where not exists (select 1 from tasks t where t.employee = n.employee and t.title = n.title);
 
   insert into app_meta (key, value) values ('seed_version', p_version::text)
   on conflict (key) do update set value = excluded.value;
@@ -102,18 +140,25 @@ end $$;
 -- wanted), and revoke apply_seed from anon.
 -- ---------------------------------------------------------------------------
 
-alter table public.tasks    enable row level security;
-alter table public.app_meta enable row level security;  -- no policies: only apply_seed touches it
+alter table public.tasks        enable row level security;
+alter table public.task_entries enable row level security;
+alter table public.app_meta     enable row level security;  -- no policies: only apply_seed touches it
 
-drop policy if exists "tasks: anyone can read"   on public.tasks;
-drop policy if exists "tasks: anyone can insert" on public.tasks;
-drop policy if exists "tasks: anyone can update" on public.tasks;
-drop policy if exists "tasks: anyone can delete" on public.tasks;
-
-create policy "tasks: anyone can read"   on public.tasks for select to anon, authenticated using (true);
-create policy "tasks: anyone can insert" on public.tasks for insert to anon, authenticated with check (true);
-create policy "tasks: anyone can update" on public.tasks for update to anon, authenticated using (true) with check (true);
-create policy "tasks: anyone can delete" on public.tasks for delete to anon, authenticated using (true);
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['tasks', 'task_entries'] loop
+    execute format('drop policy if exists "%1$s: anyone can read"   on public.%1$I', t);
+    execute format('drop policy if exists "%1$s: anyone can insert" on public.%1$I', t);
+    execute format('drop policy if exists "%1$s: anyone can update" on public.%1$I', t);
+    execute format('drop policy if exists "%1$s: anyone can delete" on public.%1$I', t);
+    execute format('create policy "%1$s: anyone can read"   on public.%1$I for select to anon, authenticated using (true)', t);
+    execute format('create policy "%1$s: anyone can insert" on public.%1$I for insert to anon, authenticated with check (true)', t);
+    execute format('create policy "%1$s: anyone can update" on public.%1$I for update to anon, authenticated using (true) with check (true)', t);
+    execute format('create policy "%1$s: anyone can delete" on public.%1$I for delete to anon, authenticated using (true)', t);
+  end loop;
+end $$;
 
 revoke all on function public.apply_seed(integer, jsonb) from public;
 grant execute on function public.apply_seed(integer, jsonb) to anon, authenticated;
@@ -123,11 +168,15 @@ grant execute on function public.apply_seed(integer, jsonb) to anon, authenticat
 -- ---------------------------------------------------------------------------
 
 do $$
+declare
+  t text;
 begin
-  if not exists (
-    select 1 from pg_publication_tables
-    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'tasks'
-  ) then
-    alter publication supabase_realtime add table public.tasks;
-  end if;
+  foreach t in array array['tasks', 'task_entries'] loop
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I', t);
+    end if;
+  end loop;
 end $$;
