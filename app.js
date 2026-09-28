@@ -36,6 +36,7 @@
   const EMPTY_ENTRY = Object.freeze({ start_time: null, end_time: null, started_on: null, ended_on: null, quantity: null, skipped: false });
   const OVERVIEW = "\u0000overview";
   const TEAM = "\u0000team";
+  const REPORTS = "\u0000reports";
   const FREQ_LABEL = { daily: "Daily", weekly: "Weekly", monthly: "Monthly" };
   const VIEWS = [
     { key: "daily", label: "Daily Tasks" },
@@ -88,6 +89,14 @@
     const h = Math.floor((min % 1440) / 60);
     const m = min % 60;
     if (d) return h ? d + "d " + h + "h" : d + "d";
+    if (!h) return m + "m";
+    return m ? h + "h " + m + "m" : h + "h";
+  }
+
+  // Totals of work time: hours and minutes, never days ("143h 20m").
+  function formatHours(min) {
+    const h = Math.floor(min / 60);
+    const m = min % 60;
     if (!h) return m + "m";
     return m ? h + "h " + m + "m" : h + "h";
   }
@@ -324,6 +333,7 @@
       setUserPassword: (name, password) => call("setUserPassword", { name, password }),
       removeUser: (name) => call("removeUser", { name }),
       report: (from, to) => call("report", { from, to }),
+      reportDetail: (from, to, employee) => call("reportDetail", { from, to, employee }),
       subscribe(onChange) {
         // Check for changes every 15 seconds while the page is visible, and
         // straight away when someone comes back to the tab.
@@ -649,6 +659,20 @@
         save();
         return publicUsers();
       },
+      async reportDetail(from, to, employee) {
+        requireAdmin();
+        const rows = [];
+        for (const [date, day] of Object.entries(state.entries)) {
+          for (const [id, e] of Object.entries(day)) {
+            const t = state.tasks.find((x) => x.id === id);
+            const d = e.ended_on || e.started_on || date;
+            if (!t || d < from || d > to || (employee && t.employee !== employee)) continue;
+            if (!e.start_time && !(e.quantity > 0) && !e.skipped) continue;
+            rows.push({ employee: t.employee, title: t.title, frequency: t.frequency || "daily", due_day: t.due_day ?? null, task_id: id, work_date: date, ...EMPTY_ENTRY, ...e });
+          }
+        }
+        return { from, to, rows };
+      },
       async report(from, to) {
         requireAdmin();
         const byKey = {};
@@ -748,6 +772,29 @@
     repEmpty: $("rep-empty"),
     repCsv: $("rep-csv"),
     team: $("team"),
+    reports: $("reports"),
+    repDetail: $("rep-detail"),
+    drPreset: $("dr-preset"),
+    drFrom: $("dr-from"),
+    drTo: $("dr-to"),
+    drWho: $("dr-who"),
+    drRange: $("dr-range"),
+    drKpis: $("dr-kpis"),
+    drChart: $("dr-chart"),
+    drChartTitle: $("dr-chart-title"),
+    drPeoplePanel: $("dr-people-panel"),
+    drPeopleHead: $("dr-people-head"),
+    drPeople: $("dr-people"),
+    drTasksHead: $("dr-tasks-head"),
+    drTasks: $("dr-tasks"),
+    drTasksEmpty: $("dr-tasks-empty"),
+    drTasksMore: $("dr-tasks-more"),
+    drLogHead: $("dr-log-head"),
+    drLog: $("dr-log"),
+    drLogEmpty: $("dr-log-empty"),
+    drLogMore: $("dr-log-more"),
+    drLogCount: $("dr-log-count"),
+    drCsv: $("dr-csv"),
     teamList: $("team-list"),
     addUserForm: $("add-user-form"),
     newUserName: $("new-user-name"),
@@ -809,7 +856,7 @@
   let subscribed = false;
 
   const isAdmin = () => Boolean(me && me.role === "admin");
-  const isPersonTab = () => active !== OVERVIEW && active !== TEAM;
+  const isPersonTab = () => active !== OVERVIEW && active !== TEAM && active !== REPORTS;
   const isTaskView = () => view === "daily" || view === "weekly" || view === "monthly";
 
   function isToday() {
@@ -855,6 +902,7 @@
     render();
     if (active === OVERVIEW) loadReport();
     if (active === TEAM) loadTeam();
+    if (active === REPORTS) loadDetail();
   }
 
   function setView(v, silent) {
@@ -1118,6 +1166,7 @@
         const list = tasksFor(name, "daily");
         return tab(name, name, countStatuses(list).done + "/" + list.length, "", pendingFor(name).length || 0);
       }),
+      tab(REPORTS, "Reports", undefined, "tab-admin"),
       tab(TEAM, "Team", undefined, "tab-admin")
     );
   }
@@ -1684,7 +1733,10 @@
   let reportData = null;
 
   function reportRange() {
-    const preset = el.repPreset.value;
+    return presetRange(el.repPreset.value, el.repFrom.value, el.repTo.value);
+  }
+
+  function presetRange(preset, customFrom, customTo) {
     const t = parseYmd(todayStr);
     switch (preset) {
       case "today":
@@ -1695,6 +1747,8 @@
         return [weekStart(todayStr), todayStr];
       case "last7":
         return [addDays(todayStr, -6), todayStr];
+      case "last30":
+        return [addDays(todayStr, -29), todayStr];
       case "month":
         return [monthStart(todayStr), todayStr];
       case "lastmonth": {
@@ -1702,8 +1756,11 @@
         const last = new Date(t.getFullYear(), t.getMonth(), 0);
         return [ymd(first), ymd(last)];
       }
-      default:
-        return [el.repFrom.value || todayStr, el.repTo.value || todayStr];
+      default: {
+        const a = customFrom || todayStr;
+        const b = customTo || todayStr;
+        return a <= b ? [a, b] : [b, a];
+      }
     }
   }
 
@@ -1754,14 +1811,18 @@
       const who = h("td", "rep-name");
       const av = h("span", "avatar avatar-sm");
       paintAvatar(av, name);
-      who.append(av, h("span", "", name));
+      const open = h("button", "link-cell", name);
+      open.type = "button";
+      open.title = "Open " + name + "'s detailed report";
+      open.addEventListener("click", () => openDetail(name));
+      who.append(av, open);
       const pending = employees.includes(name) ? pendingFor(name).length : 0;
       tr.append(
         who,
         h("td", "num-col", x.days.size),
         h("td", "num-col", x.done),
-        h("td", "num-col", formatDuration(x.minutes)),
-        h("td", "num-col", x.days.size ? formatDuration(Math.round(x.minutes / x.days.size)) : "—"),
+        h("td", "num-col", formatHours(x.minutes)),
+        h("td", "num-col", x.days.size ? formatHours(Math.round(x.minutes / x.days.size)) : "—"),
         h("td", "num-col" + (pending ? " cell-alert" : ""), pending)
       );
       if (hasQty) tr.append(h("td", "num-col", DONE_COUNTERS[name] ? x.quantity : "—"));
@@ -1775,7 +1836,7 @@
     el.repBody.replaceChildren(...rows);
 
     const foot = h("tr");
-    foot.append(h("td", "", "Total"), h("td", "num-col", sumDays), h("td", "num-col", sumDone), h("td", "num-col", formatDuration(sumMin)), h("td", "num-col", ""), h("td", "num-col", sumPending));
+    foot.append(h("td", "", "Total"), h("td", "num-col", sumDays), h("td", "num-col", sumDone), h("td", "num-col", formatHours(sumMin)), h("td", "num-col", ""), h("td", "num-col", sumPending));
     if (hasQty) foot.append(h("td", "num-col", sumQty));
     el.repFoot.replaceChildren(foot);
     el.repEmpty.hidden = reportData.rows.length > 0;
@@ -1827,6 +1888,403 @@
     el.assignTitle.value = "";
     showToast("Assigned “" + title + "” to " + employee + " as a " + FREQ_LABEL[frequency].toLowerCase() + " task");
     refresh();
+  });
+
+  // ---- Admin: detailed reports -----------------------------------------------
+
+  let detail = null; // { from, to, who, rows }
+  let logLimit = 50;
+  let taskLimit = 15;
+
+  function openDetail(who) {
+    // Carry the Overview's period over, then show one person (or everyone).
+    el.drPreset.value = el.repPreset.value === "custom" ? "custom" : el.repPreset.value;
+    el.drFrom.value = el.repFrom.value;
+    el.drTo.value = el.repTo.value;
+    renderDetailFilters();
+    el.drWho.value = who || "";
+    setActiveTab(REPORTS);
+  }
+
+  function renderDetailFilters() {
+    const options = [option("", "Everyone")].concat(employees.map((n) => option(n, n)));
+    const current = el.drWho.value;
+    if (options.map((o) => o.value).join("\u0001") !== Array.from(el.drWho.options, (o) => o.value).join("\u0001")) {
+      el.drWho.replaceChildren(...options);
+      el.drWho.value = employees.includes(current) ? current : "";
+    }
+  }
+
+  async function loadDetail() {
+    if (!isAdmin()) return;
+    renderDetailFilters();
+    const [from, to] = presetRange(el.drPreset.value, el.drFrom.value, el.drTo.value);
+    el.drFrom.value = from;
+    el.drTo.value = to;
+    const who = el.drWho.value;
+    try {
+      const data = await store.reportDetail(from, to, who || null);
+      detail = { from: data.from, to: data.to, who, rows: data.rows };
+    } catch (e) {
+      if (!handleAuthError(e)) showToast("Couldn't load the report: " + e.message);
+      return;
+    }
+    logLimit = 50;
+    taskLimit = 15;
+    renderDetail();
+  }
+
+  const workDay = (r) => r.ended_on || r.started_on || r.work_date;
+
+  // Finished on or before the task's due day (the same day for daily tasks).
+  function onTime(r) {
+    return Boolean(r.end_time) && (r.ended_on || r.work_date) <= dueDate({ frequency: r.frequency, due_day: r.due_day }, r.work_date);
+  }
+
+  function summarize(rows) {
+    const done = rows.filter((r) => r.end_time);
+    const minutes = done.reduce((sum, r) => sum + (minutesTaken(r, false) || 0), 0);
+    const worked = rows.filter((r) => r.start_time);
+    const days = new Set(worked.map(workDay));
+    const personDays = new Set(worked.map((r) => r.employee + "|" + workDay(r)));
+    return {
+      done: done.length,
+      minutes,
+      days: days.size,
+      personDays: personDays.size,
+      onTime: done.filter(onTime).length,
+      late: done.length - done.filter(onTime).length,
+      excused: rows.filter((r) => r.skipped && !r.end_time).length,
+      open: rows.filter((r) => r.start_time && !r.end_time).length,
+      quantity: rows.reduce((sum, r) => sum + (r.quantity || 0), 0),
+    };
+  }
+
+  const pct = (a, b) => (b ? Math.round((a / b) * 100) + "%" : "—");
+
+  function renderDetail() {
+    if (!detail) return;
+    const people = detail.who ? [detail.who] : employees;
+    const rows = detail.rows;
+    const sum = summarize(rows);
+    const span = daysBetween(detail.from, detail.to) + 1;
+    el.drRange.textContent =
+      (detail.who ? detail.who : "Everyone") + " · " + dayDate(detail.from) + (detail.from === detail.to ? "" : " – " + dayDate(detail.to)) + " · " + span + (span === 1 ? " day" : " days");
+
+    // Headline numbers.
+    const pendingNow = people.reduce((n, name) => n + pendingFor(name).length, 0);
+    const counts = people.some((n) => DONE_COUNTERS[n]);
+    const tile = (value, label, sub, cls) => {
+      const t = h("div", "dr-kpi" + (cls ? " " + cls : ""));
+      t.append(h("strong", "", value), h("span", "dr-kpi-label", label));
+      if (sub) t.append(h("span", "dr-kpi-sub", sub));
+      return t;
+    };
+    el.drKpis.replaceChildren(
+      tile(sum.done, "Tasks done", sum.open ? sum.open + " still in progress" : ""),
+      tile(formatHours(sum.minutes), "Time worked", sum.days + (sum.days === 1 ? " day with work" : " days with work")),
+      tile(
+        sum.personDays ? formatHours(Math.round(sum.minutes / sum.personDays)) : "—",
+        detail.who ? "Average per day worked" : "Average per person per day",
+        detail.who ? "" : sum.personDays + " person-days"
+      ),
+      tile(pct(sum.onTime, sum.done), "On time", sum.late ? sum.late + " finished late" : sum.done ? "None late" : "", sum.done && sum.late / sum.done > 0.2 ? "kpi-warn" : ""),
+      tile(pendingNow, "Pending now", sum.excused ? sum.excused + " excused in period" : "", pendingNow ? "kpi-alert" : "kpi-good"),
+      ...(counts ? [tile(sum.quantity, capitalize(DONE_COUNTERS[people.find((n) => DONE_COUNTERS[n])]) + " done")] : [])
+    );
+
+    renderDetailChart(rows);
+    renderDetailPeople(rows);
+    renderDetailTasks(rows);
+    renderDetailLog(rows);
+  }
+
+  // Column chart: tasks finished per day (per week for long periods), one
+  // series, with a hover tooltip. The same numbers are in the tables below.
+  function renderDetailChart(rows) {
+    const byWeek = daysBetween(detail.from, detail.to) > 62;
+    el.drChartTitle.textContent = "Tasks done per " + (byWeek ? "week" : "day");
+    const buckets = [];
+    const index = new Map();
+    const first = byWeek ? weekStart(detail.from) : detail.from;
+    for (let d = first; d <= detail.to; d = addDays(d, byWeek ? 7 : 1)) {
+      index.set(d, buckets.length);
+      buckets.push({ key: d, done: 0, minutes: 0 });
+    }
+    for (const r of rows) {
+      if (!r.end_time) continue;
+      const d = workDay(r);
+      const b = buckets[index.get(byWeek ? weekStart(d) : d)];
+      if (!b) continue;
+      b.done++;
+      b.minutes += minutesTaken(r, false) || 0;
+    }
+
+    const width = Math.max(320, el.drChart.clientWidth || 800);
+    const height = 220;
+    const m = { top: 12, right: 8, bottom: 28, left: 34 };
+    const iw = width - m.left - m.right;
+    const ih = height - m.top - m.bottom;
+    const maxVal = Math.max(1, ...buckets.map((b) => b.done));
+    const step = maxVal <= 5 ? 1 : maxVal <= 10 ? 2 : maxVal <= 25 ? 5 : maxVal <= 50 ? 10 : Math.ceil(maxVal / 50) * 10;
+    const top = Math.ceil(maxVal / step) * step;
+    const y = (v) => m.top + ih - (v / top) * ih;
+    const band = iw / buckets.length;
+    const barW = Math.max(2, Math.min(24, band - 2));
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+    svg.setAttribute("width", width);
+    svg.setAttribute("height", height);
+    svg.setAttribute("role", "img");
+    const total = buckets.reduce((n, b) => n + b.done, 0);
+    const best = buckets.reduce((a, b) => (b.done > a.done ? b : a), buckets[0]);
+    svg.setAttribute("aria-label", total + " tasks done in this period" + (best && best.done ? ", most on " + dayDate(best.key) + " (" + best.done + ")" : ""));
+    const add = (tag, attrs, parent) => {
+      const n = document.createElementNS(NS, tag);
+      for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+      (parent || svg).append(n);
+      return n;
+    };
+    for (let v = 0; v <= top; v += step) {
+      add("line", { x1: m.left, x2: width - m.right, y1: y(v), y2: y(v), class: "dr-grid" });
+      const t = add("text", { x: m.left - 8, y: y(v) + 4, class: "dr-axis", "text-anchor": "end" });
+      t.textContent = v;
+    }
+    const labelEvery = Math.ceil(buckets.length / Math.max(1, Math.floor(iw / 56)));
+    const tip = h("div", "dr-tip");
+    tip.hidden = true;
+    buckets.forEach((b, i) => {
+      const cx = m.left + band * i + band / 2;
+      if (b.done) {
+        const x0 = cx - barW / 2;
+        const y0 = y(b.done);
+        const r = Math.min(4, barW / 2, (m.top + ih - y0) / 2);
+        const base = m.top + ih;
+        add("path", {
+          class: "dr-bar",
+          d: "M" + x0 + "," + base + "V" + (y0 + r) + "Q" + x0 + "," + y0 + " " + (x0 + r) + "," + y0 + "H" + (x0 + barW - r) + "Q" + (x0 + barW) + "," + y0 + " " + (x0 + barW) + "," + (y0 + r) + "V" + base + "Z",
+        });
+      }
+      if (i % labelEvery === 0) {
+        const t = add("text", { x: cx, y: height - 8, class: "dr-axis", "text-anchor": "middle" });
+        t.textContent = byWeek ? shortDate(b.key) : parseYmd(b.key).toLocaleDateString("en-GB", buckets.length <= 14 ? { weekday: "short", day: "numeric" } : { day: "numeric", month: "short" });
+      }
+      // Hover target: the whole column, bigger than the bar.
+      const hit = add("rect", { x: m.left + band * i, y: m.top, width: band, height: ih, class: "dr-hit", tabindex: "0" });
+      const show = () => {
+        tip.replaceChildren(
+          h("strong", "", byWeek ? "Week of " + dayDate(b.key) : dayDate(b.key)),
+          h("span", "", b.done + (b.done === 1 ? " task done" : " tasks done")),
+          h("span", "", formatHours(b.minutes) + " worked")
+        );
+        tip.hidden = false;
+        const left = Math.min(Math.max(cx - 70, 0), width - 150);
+        tip.style.left = left + "px";
+        tip.style.top = Math.max(0, y(b.done) - 72) + "px";
+        hit.classList.add("is-hover");
+      };
+      const hide = () => {
+        tip.hidden = true;
+        hit.classList.remove("is-hover");
+      };
+      hit.addEventListener("mouseenter", show);
+      hit.addEventListener("focus", show);
+      hit.addEventListener("mouseleave", hide);
+      hit.addEventListener("blur", hide);
+    });
+    add("line", { x1: m.left, x2: width - m.right, y1: m.top + ih, y2: m.top + ih, class: "dr-baseline" });
+    const wrap = h("div", "dr-chart-inner");
+    wrap.append(svg, tip);
+    el.drChart.replaceChildren(wrap);
+    if (!total) el.drChart.append(h("p", "empty", "No tasks were finished in this period."));
+  }
+
+  function renderDetailPeople(rows) {
+    el.drPeoplePanel.hidden = Boolean(detail.who);
+    if (detail.who) return;
+    const counts = Object.keys(DONE_COUNTERS).length > 0;
+    const head = h("tr");
+    ["Person", "Days worked", "Tasks done", "Time worked", "Avg per day", "On time", "Pending now"].concat(counts ? ["Videos"] : []).forEach((label, i) =>
+      head.append(h("th", i ? "num-col" : "", label))
+    );
+    el.drPeopleHead.replaceChildren(head);
+    const stats = employees.map((name) => ({ name, s: summarize(rows.filter((r) => r.employee === name)), pending: pendingFor(name).length }));
+    const maxDone = Math.max(1, ...stats.map((x) => x.s.done));
+    el.drPeople.replaceChildren(
+      ...stats.map(({ name, s, pending }) => {
+        const tr = h("tr", "dr-row-link");
+        tr.tabIndex = 0;
+        tr.title = "Show only " + name;
+        const open = () => {
+          el.drWho.value = name;
+          loadDetail();
+        };
+        tr.addEventListener("click", open);
+        tr.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") open();
+        });
+        const who = h("td", "rep-name");
+        const av = h("span", "avatar avatar-sm");
+        paintAvatar(av, name);
+        who.append(av, h("span", "", name));
+        const doneCell = h("td", "num-col dr-bar-cell");
+        const meter = h("span", "dr-meter");
+        meter.style.width = (s.done / maxDone) * 100 + "%";
+        doneCell.append(meter, h("span", "dr-meter-val", s.done));
+        tr.append(
+          who,
+          h("td", "num-col", s.days),
+          doneCell,
+          h("td", "num-col", formatHours(s.minutes)),
+          h("td", "num-col", s.days ? formatHours(Math.round(s.minutes / s.days)) : "—"),
+          h("td", "num-col", pct(s.onTime, s.done)),
+          h("td", "num-col" + (pending ? " cell-alert" : ""), pending)
+        );
+        if (counts) tr.append(h("td", "num-col", DONE_COUNTERS[name] ? s.quantity : "—"));
+        return tr;
+      })
+    );
+  }
+
+  function renderDetailTasks(rows) {
+    const all = !detail.who;
+    const head = h("tr");
+    ["Task"].concat(all ? ["Person"] : [], ["Type", "Times done", "Total time", "Avg time", "Late", "Last done"]).forEach((label, i) =>
+      head.append(h("th", i === 0 || (all && i === 1) || label === "Type" ? "" : "num-col", label))
+    );
+    el.drTasksHead.replaceChildren(head);
+    const byTask = new Map();
+    for (const r of rows) {
+      if (!r.end_time) continue;
+      const x = byTask.get(r.task_id) || { r, done: 0, minutes: 0, late: 0, last: "" };
+      x.done++;
+      x.minutes += minutesTaken(r, false) || 0;
+      if (!onTime(r)) x.late++;
+      if (workDay(r) > x.last) x.last = workDay(r);
+      byTask.set(r.task_id, x);
+    }
+    const list = [...byTask.values()].sort((a, b) => b.done - a.done || b.minutes - a.minutes);
+    el.drTasks.replaceChildren(
+      ...list.slice(0, taskLimit).map((x) => {
+        const tr = h("tr");
+        tr.append(h("td", "dr-task", x.r.title));
+        if (all) tr.append(h("td", "", x.r.employee));
+        const type = h("td");
+        type.append(h("span", "freq-badge freq-" + x.r.frequency, FREQ_LABEL[x.r.frequency] || "Daily"));
+        tr.append(
+          type,
+          h("td", "num-col", x.done),
+          h("td", "num-col", formatHours(x.minutes)),
+          h("td", "num-col", formatDuration(Math.round(x.minutes / x.done))),
+          h("td", "num-col" + (x.late ? " cell-alert" : ""), x.late),
+          h("td", "num-col", dayDate(x.last))
+        );
+        return tr;
+      })
+    );
+    el.drTasksEmpty.hidden = list.length > 0;
+    el.drTasksMore.hidden = list.length <= taskLimit;
+    el.drTasksMore.textContent = "Show all " + list.length + " tasks";
+  }
+
+  function logStatus(r) {
+    if (r.end_time) return onTime(r) ? ["Done", "status-done"] : ["Done late", "status-in_progress"];
+    if (r.start_time) return ["In progress", "status-in_progress"];
+    if (r.skipped) return ["Excused", "status-excused"];
+    return ["Count only", "status-todo"];
+  }
+
+  function renderDetailLog(rows) {
+    const all = !detail.who;
+    const head = h("tr");
+    ["Date"].concat(all ? ["Person"] : [], ["Task", "Type", "Start", "End", "Time taken", "Status"]).forEach((label) => head.append(h("th", label === "Time taken" ? "num-col" : "", label)));
+    el.drLogHead.replaceChildren(head);
+    const shown = rows.slice(0, logLimit);
+    el.drLog.replaceChildren(
+      ...shown.map((r) => {
+        const tr = h("tr");
+        const when = (day, time) => (time ? (day && day !== workDay(r) ? dayDate(day) + " " : "") + formatClock(time) : "—");
+        const mins = minutesTaken(r, false);
+        const [label, cls] = logStatus(r);
+        const st = h("td");
+        st.append(h("span", "pill " + cls, label));
+        tr.append(h("td", "", dayDate(workDay(r))));
+        if (all) tr.append(h("td", "", r.employee));
+        const type = h("td");
+        type.append(h("span", "freq-badge freq-" + r.frequency, FREQ_LABEL[r.frequency] || "Daily"));
+        tr.append(
+          h("td", "dr-task", r.title + (r.quantity ? " · " + r.quantity + " done" : "")),
+          type,
+          h("td", "", when(r.started_on, r.start_time)),
+          h("td", "", when(r.ended_on, r.end_time)),
+          h("td", "num-col", mins === null ? "—" : formatDuration(mins)),
+          st
+        );
+        return tr;
+      })
+    );
+    el.drLogEmpty.hidden = rows.length > 0;
+    el.drLogCount.textContent = rows.length ? rows.length + (rows.length === 1 ? " entry" : " entries") : "";
+    el.drLogMore.hidden = rows.length <= logLimit;
+    el.drLogMore.textContent = "Show all " + rows.length + " entries";
+  }
+
+  function downloadDetailCsv() {
+    if (!detail) return;
+    const esc = (v) => {
+      const s = String(v ?? "");
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const lines = [["Date", "Person", "Task", "Type", "Started", "Ended", "Minutes", "Status", "Items done"].join(",")];
+    for (const r of detail.rows) {
+      const mins = minutesTaken(r, false);
+      lines.push(
+        [
+          workDay(r),
+          r.employee,
+          r.title,
+          FREQ_LABEL[r.frequency] || "Daily",
+          r.start_time ? (r.started_on || r.work_date) + " " + r.start_time.slice(0, 5) : "",
+          r.end_time ? (r.ended_on || r.started_on || r.work_date) + " " + r.end_time.slice(0, 5) : "",
+          mins ?? "",
+          logStatus(r)[0],
+          r.quantity ?? "",
+        ].map(esc).join(",")
+      );
+    }
+    const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "sop-detailed-" + (detail.who ? detail.who.replace(/\s+/g, "-") + "-" : "") + detail.from + "-to-" + detail.to + ".csv";
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  el.repDetail.addEventListener("click", () => openDetail(""));
+  el.drPreset.addEventListener("change", loadDetail);
+  el.drWho.addEventListener("change", loadDetail);
+  for (const input of [el.drFrom, el.drTo]) {
+    input.addEventListener("change", () => {
+      el.drPreset.value = "custom";
+      loadDetail();
+    });
+  }
+  el.drLogMore.addEventListener("click", () => {
+    logLimit = Infinity;
+    renderDetailLog(detail.rows);
+  });
+  el.drTasksMore.addEventListener("click", () => {
+    taskLimit = Infinity;
+    renderDetailTasks(detail.rows);
+  });
+  el.drCsv.addEventListener("click", downloadDetailCsv);
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => active === REPORTS && detail && renderDetailChart(detail.rows), 150);
   });
 
   // ---- Admin: team -----------------------------------------------------------
@@ -1947,6 +2405,7 @@
     const person = isPersonTab();
     el.overview.hidden = active !== OVERVIEW;
     el.team.hidden = active !== TEAM;
+    el.reports.hidden = active !== REPORTS;
     el.tasksPanel.hidden = !person || !isTaskView();
     el.pendingPanel.hidden = !person || view !== "pending";
     el.remindersPanel.hidden = !person || view !== "reminders";
@@ -1958,6 +2417,7 @@
     renderDoneCounter(list);
     if (active === OVERVIEW) renderOverview();
     if (active === TEAM) renderTeam();
+    if (active === REPORTS) renderDetailFilters();
     if (!person) return;
 
     renderNotes();
@@ -2390,7 +2850,7 @@
     reminders = [];
     noteShownFor = "";
     editingTaskId = null;
-    active = isAdmin() ? readPref("tab", (v) => v === OVERVIEW || v === TEAM || employees.includes(v), OVERVIEW) : employees[0];
+    active = isAdmin() ? readPref("tab", (v) => v === OVERVIEW || v === TEAM || v === REPORTS || employees.includes(v), OVERVIEW) : employees[0];
     view = readPref("view", (v) => VIEWS.some((x) => x.key === v), "daily");
     render();
     if (!subscribed) {
@@ -2399,6 +2859,7 @@
     }
     await refresh();
     if (active === OVERVIEW) loadReport();
+    if (active === REPORTS) loadDetail();
   }
 
   el.authSite.addEventListener("submit", async (e) => {

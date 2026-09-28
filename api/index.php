@@ -1037,6 +1037,41 @@ switch ($action) {
 
     // ---- Admin: reports -----------------------------------------------------
 
+    case 'reportDetail':
+        // Every recorded entry in a period (optionally for one person), with
+        // its task, for the detailed reports page. Work is dated by the day it
+        // was finished, else started, else its scheduled day.
+        require_admin($isAdmin);
+        $from = date_param($input, 'from');
+        $to = date_param($input, 'to');
+        if ($from > $to) {
+            [$from, $to] = [$to, $from];
+        }
+        if ((strtotime($to) - strtotime($from)) / 86400 > 400) {
+            fail('Choose a range of up to a year.');
+        }
+        $day = 'COALESCE(e.ended_on, e.started_on, e.work_date)';
+        $sql = "SELECT t.employee, t.title, t.frequency, t.due_day, e.task_id, e.work_date, e.start_time, e.end_time,
+                       e.started_on, e.ended_on, e.quantity, e.skipped
+                FROM task_entries e JOIN tasks t ON t.id = e.task_id
+                WHERE $day BETWEEN ? AND ? AND (e.start_time IS NOT NULL OR e.quantity > 0 OR e.skipped = 1)";
+        $params = [$from, $to];
+        $who = $input['employee'] ?? null;
+        if (is_string($who) && $who !== '') {
+            $sql .= ' AND t.employee = ?';
+            $params[] = str_param($input, 'employee', 100);
+        }
+        $q = $db->prepare($sql . " ORDER BY $day DESC, e.start_time DESC LIMIT 20000");
+        $q->execute($params);
+        $rows = $q->fetchAll();
+        foreach ($rows as &$r) {
+            $r['due_day'] = $r['due_day'] === null ? null : (int) $r['due_day'];
+            $r['quantity'] = $r['quantity'] === null ? null : (int) $r['quantity'];
+            $r['skipped'] = (bool) $r['skipped'];
+        }
+        respond(200, ['data' => ['from' => $from, 'to' => $to, 'rows' => $rows]]);
+
+
     case 'report':
         require_admin($isAdmin);
         $from = date_param($input, 'from');

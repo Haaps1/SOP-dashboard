@@ -23,6 +23,11 @@ A daily task tracker for the team that also serves as the SOP. It is plain HTML,
   - An **Overview** of everyone for the selected day: progress, what each person is working on now, time and videos.
   - **Assign a new task** to anyone.
   - **Reports** for today, this week, last 7 days, this month, last month or custom dates, with a CSV download.
+  - **Detailed reports** (the **Reports** tab, the **Detailed reports** button, or a click on a name in the Overview's report):
+    - Filter by period and person.
+    - Headline numbers: tasks done, time worked, average per person per day, on-time rate, pending now, excused, and videos.
+    - A tasks-done-per-day chart with hover details (per week for periods over two months).
+    - A by-person comparison, a by-task breakdown (times done, total and average time, late count, last done), and the full activity log with CSV download.
   - A **Team** page to add or remove people and set their passwords.
   - A tab per employee with full control.
 - **Each person has five sections:** Daily Tasks, Weekly Tasks, Monthly Tasks, Pending and Reminders.

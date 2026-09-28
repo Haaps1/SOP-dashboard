@@ -177,7 +177,10 @@
         <section class="panel">
           <div class="section-head">
             <h2>Reports</h2>
-            <button type="button" id="rep-csv" class="btn-secondary">Download CSV</button>
+            <div class="section-actions">
+              <button type="button" id="rep-detail" class="btn-primary">Detailed reports</button>
+              <button type="button" id="rep-csv" class="btn-secondary">Download CSV</button>
+            </div>
           </div>
           <div class="report-controls">
             <label class="field">
@@ -209,6 +212,90 @@
             </table>
           </div>
           <p id="rep-empty" class="empty" hidden>No work recorded in this period.</p>
+        </section>
+      </div>
+
+      <!-- Admin: detailed reports -->
+      <div id="reports" class="admin-view" hidden>
+        <section class="panel">
+          <div class="section-head">
+            <h2>Detailed reports</h2>
+            <button type="button" id="dr-csv" class="btn-secondary">Download full log (CSV)</button>
+          </div>
+          <div class="report-controls">
+            <label class="field">
+              <span>Period</span>
+              <select id="dr-preset">
+                <option value="today">Today</option>
+                <option value="yesterday">Yesterday</option>
+                <option value="week">This week</option>
+                <option value="last7" selected>Last 7 days</option>
+                <option value="last30">Last 30 days</option>
+                <option value="month">This month</option>
+                <option value="lastmonth">Last month</option>
+                <option value="custom">Custom dates</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>From</span>
+              <input id="dr-from" type="date" />
+            </label>
+            <label class="field">
+              <span>To</span>
+              <input id="dr-to" type="date" />
+            </label>
+            <label class="field">
+              <span>Person</span>
+              <select id="dr-who"></select>
+            </label>
+          </div>
+          <p id="dr-range" class="dr-range"></p>
+          <div id="dr-kpis" class="dr-kpis"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h2 id="dr-chart-title">Tasks done per day</h2>
+          </div>
+          <div id="dr-chart" class="dr-chart"></div>
+        </section>
+
+        <section class="panel" id="dr-people-panel">
+          <div class="section-head"><h2>By person</h2></div>
+          <p class="section-help">Click a person to see only their report.</p>
+          <div class="table-scroll">
+            <table class="report-table dr-table">
+              <thead id="dr-people-head"></thead>
+              <tbody id="dr-people"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head"><h2>By task</h2></div>
+          <div class="table-scroll">
+            <table class="report-table dr-table">
+              <thead id="dr-tasks-head"></thead>
+              <tbody id="dr-tasks"></tbody>
+            </table>
+          </div>
+          <p id="dr-tasks-empty" class="empty" hidden>No tasks were finished in this period.</p>
+          <button type="button" id="dr-tasks-more" class="btn-secondary dr-more" hidden></button>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h2>Activity log</h2>
+            <span id="dr-log-count" class="section-count"></span>
+          </div>
+          <div class="table-scroll">
+            <table class="report-table dr-table dr-log">
+              <thead id="dr-log-head"></thead>
+              <tbody id="dr-log"></tbody>
+            </table>
+          </div>
+          <p id="dr-log-empty" class="empty" hidden>Nothing was recorded in this period.</p>
+          <button type="button" id="dr-log-more" class="btn-secondary dr-more" hidden></button>
         </section>
       </div>
 
