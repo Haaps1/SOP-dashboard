@@ -1,7 +1,6 @@
 (function () {
   "use strict";
 
-  const EMPLOYEES = window.EMPLOYEES;
   const SEED_VERSION = window.SEED_VERSION;
   const DONE_COUNTERS = window.DONE_COUNTERS || {};
   const config = window.SOP_CONFIG || {};
@@ -9,7 +8,7 @@
   // Flatten SEED_TASKS into rows: { employee, title, position }.
   function seedRows() {
     const rows = [];
-    for (const employee of EMPLOYEES) {
+    for (const employee of window.EMPLOYEES) {
       (window.SEED_TASKS[employee] || []).forEach((title, i) => {
         rows.push({ employee, title, position: i });
       });
@@ -26,6 +25,8 @@
 
   const STATUS_LABEL = { todo: "To Do", in_progress: "In Progress", done: "Done" };
   const EMPTY_ENTRY = Object.freeze({ start_time: null, end_time: null, quantity: null });
+  const OVERVIEW = "\u0000overview";
+  const TEAM = "\u0000team";
 
   function toMinutes(t) {
     if (!t) return null;
@@ -67,6 +68,28 @@
     return ((h + 11) % 12) + 1 + ":" + String(m).padStart(2, "0") + (h < 12 ? " AM" : " PM");
   }
 
+  function capitalize(s) {
+    return s.replace(/^./, (c) => c.toUpperCase());
+  }
+
+  function initials(name) {
+    const parts = name.trim().split(/\s+/);
+    return ((parts[0] || "")[0] + ((parts[1] || "")[0] || "")).toUpperCase();
+  }
+
+  // A stable colour per person, for their avatar.
+  function avatarHue(name) {
+    let h = 0;
+    for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) % 360;
+    return h;
+  }
+
+  function paintAvatar(node, name, isAdmin) {
+    node.textContent = isAdmin ? "★" : initials(name);
+    node.style.setProperty("--avatar-hue", isAdmin ? 220 : avatarHue(name));
+    node.classList.toggle("avatar-admin", Boolean(isAdmin));
+  }
+
   const ICONS = {
     up: '<path d="M12 6l-6 6h4v6h4v-6h4z"/>',
     down: '<path d="M12 18l6-6h-4V6h-4v6H6z"/>',
@@ -83,6 +106,13 @@
     btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="currentColor">' + ICONS[icon] + "</svg>";
     btn.addEventListener("click", onClick);
     return btn;
+  }
+
+  function h(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
   }
 
   function nowHHMM() {
@@ -106,102 +136,36 @@
     return ymd(d);
   }
 
-  // -------------------------------------------------------------------------
-  // Data stores. Both expose the same interface:
-  //   init()                          -> apply seed version, resolve when ready
-  //   listTasks()                     -> Promise<Task[]>
-  //   listEntries(date)               -> Promise<Entry[]> for that day
-  //   insertTask({employee,title,position})
-  //   removeTask(id)                  -> also removes its history
-  //   setPositions([{id, position}])  -> reorder tasks
-  //   saveEntry(taskId, date, {start_time, end_time, quantity})
-  //   listWorkDates(employee, from, to) -> dates (YYYY-MM-DD) with work started
-  //   listNotes(date)                 -> Promise<[{employee, body}]>
-  //   saveNote(employee, date, body)
-  //   subscribe(onChange)             -> called when data changes elsewhere
-  //
-  // Start and end times are write-once: once saved they are never changed
-  // (schema.sql enforces the same rule in the database).
-  // -------------------------------------------------------------------------
-
-  function createSupabaseStore(url, key) {
-    const client = window.supabase.createClient(url, key);
-
-    async function check(promise) {
-      const { data, error } = await promise;
-      if (error) throw error;
-      return data;
-    }
-
-    return {
-      mode: "supabase",
-      async init() {
-        await check(client.rpc("apply_seed", { p_version: SEED_VERSION, p_tasks: seedRows() }));
-      },
-      listTasks() {
-        return check(
-          client
-            .from("tasks")
-            .select("id, employee, title, position, created_at")
-            .order("position", { ascending: true })
-            .order("created_at", { ascending: true })
-        );
-      },
-      listEntries(date) {
-        return check(client.from("task_entries").select("task_id, start_time, end_time, quantity").eq("work_date", date));
-      },
-      insertTask(row) {
-        return check(client.from("tasks").insert(row));
-      },
-      removeTask(id) {
-        return check(client.from("tasks").delete().eq("id", id));
-      },
-      setPositions(updates) {
-        return Promise.all(
-          updates.map((u) => check(client.from("tasks").update({ position: u.position }).eq("id", u.id)))
-        );
-      },
-      saveEntry(taskId, date, times) {
-        return check(
-          client
-            .from("task_entries")
-            .upsert({ task_id: taskId, work_date: date, ...times }, { onConflict: "task_id,work_date" })
-        );
-      },
-      async listWorkDates(employee, from, to) {
-        const rows = await check(
-          client
-            .from("task_entries")
-            .select("work_date, tasks!inner(employee)")
-            .eq("tasks.employee", employee)
-            .gte("work_date", from)
-            .lte("work_date", to)
-            .not("start_time", "is", null)
-        );
-        return [...new Set(rows.map((r) => r.work_date))];
-      },
-      listNotes(date) {
-        return check(client.from("notes").select("employee, body").eq("work_date", date));
-      },
-      saveNote(employee, date, body) {
-        return check(
-          client.from("notes").upsert({ employee, work_date: date, body }, { onConflict: "employee,work_date" })
-        );
-      },
-      subscribe(onChange) {
-        client
-          .channel("dashboard-changes")
-          .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, onChange)
-          .on("postgres_changes", { event: "*", schema: "public", table: "task_entries" }, onChange)
-          .on("postgres_changes", { event: "*", schema: "public", table: "notes" }, onChange)
-          .subscribe();
-      },
-    };
+  function shortDate(s) {
+    return parseYmd(s).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
   }
 
+  function apiError(message, code) {
+    const e = new Error(message);
+    e.code = code;
+    return e;
+  }
+
+  // -------------------------------------------------------------------------
+  // Data stores. Both expose the same interface:
+  //   getSession()                    -> { site_ok, user: {role, name} | null, users: [{name, has_password}] }
+  //   siteLogin(password), userLogin(name, password), switchUser(), logout()
+  //   init()                          -> admin: apply seed version
+  //   listTasks(), listEntries(date), listNotes(date)   (employees get only their own)
+  //   listWorkDates(employee, from, to)
+  //   insertTask({employee, title}), removeTask(id)     (admin)
+  //   duplicateTask(id), setPositions([{id, position}])
+  //   saveEntry(taskId, date, {start_time, end_time, quantity})
+  //   saveNote(employee, date, body)
+  //   listUsers(), addUser(name, password), setUserPassword(name, password), removeUser(name)   (admin)
+  //   report(from, to)                -> { rows: [{employee, work_date, tasks_started, tasks_done, minutes, quantity}] }
+  //   subscribe(onChange)             -> called when data may have changed elsewhere
+  //
+  // Start and end times are write-once: once saved they are never changed.
+  // -------------------------------------------------------------------------
+
   // PHP + MySQL API in api/index.php (for regular web hosting such as
-  // Hostinger). There is no push channel, so changes from other people are
-  // picked up by polling.
+  // Hostinger). The server enforces who may see and change what.
   function createPhpStore(apiUrl) {
     async function call(action, params) {
       let res;
@@ -211,6 +175,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action, ...params }),
           cache: "no-store",
+          credentials: "same-origin",
         });
       } catch (e) {
         throw new Error("Can't reach the server. Check your internet connection.");
@@ -222,25 +187,34 @@
         /* not JSON: PHP missing or a server error page */
       }
       if (!res.ok || !body || body.error) {
-        throw new Error((body && body.error) || "The server returned an error (" + res.status + ").");
+        throw apiError((body && body.error) || "The server returned an error (" + res.status + ").", body && body.code);
       }
       return body.data;
     }
 
     return {
       mode: "php",
-      init() {
-        return call("init", { version: SEED_VERSION, tasks: seedRows() });
-      },
+      getSession: () => call("session"),
+      siteLogin: (password) => call("siteLogin", { password }),
+      userLogin: (name, password) => call("userLogin", { name, password }),
+      switchUser: () => call("switchUser"),
+      logout: () => call("logout"),
+      init: () => call("init", { version: SEED_VERSION, tasks: seedRows(), employees: window.EMPLOYEES }),
       listTasks: () => call("listTasks"),
       listEntries: (date) => call("listEntries", { date }),
       insertTask: (row) => call("insertTask", row),
+      duplicateTask: (id) => call("duplicateTask", { id }),
       removeTask: (id) => call("removeTask", { id }),
       setPositions: (updates) => call("setPositions", { updates }),
       saveEntry: (taskId, date, times) => call("saveEntry", { task_id: taskId, date, ...times }),
       listWorkDates: (employee, from, to) => call("listWorkDates", { employee, from, to }),
       listNotes: (date) => call("listNotes", { date }),
       saveNote: (employee, date, body) => call("saveNote", { employee, date, body }),
+      listUsers: () => call("listUsers"),
+      addUser: (name, password) => call("addUser", { name, password }),
+      setUserPassword: (name, password) => call("setUserPassword", { name, password }),
+      removeUser: (name) => call("removeUser", { name }),
+      report: (from, to) => call("report", { from, to }),
       subscribe(onChange) {
         // Check for changes every 15 seconds while the page is visible, and
         // straight away when someone comes back to the tab.
@@ -254,16 +228,19 @@
     };
   }
 
-  // Data lives in this browser only (for trying the dashboard out).
+  // Data lives in this browser only (for previewing the dashboard). It follows
+  // the same sign-in steps with demo passwords, but it is not secure.
+  const DEMO = { site: "demo", admin: "admin", employee: "1234" };
+
   function createLocalStore() {
-    const KEY = "sop-dashboard:v2";
+    const KEY = "sop-dashboard:v3";
 
     function load() {
       try {
         const s = JSON.parse(localStorage.getItem(KEY));
-        if (s && Array.isArray(s.tasks) && s.entries) return { notes: {}, ...s };
+        if (s && Array.isArray(s.tasks) && s.entries) return { notes: {}, users: [], session: {}, ...s };
       } catch (e) {}
-      return { seedVersion: 0, tasks: [], entries: {}, notes: {} };
+      return { seedVersion: 0, tasks: [], entries: {}, notes: {}, users: [], session: {} };
     }
     function save() {
       try {
@@ -279,55 +256,149 @@
     }
     let state = load();
 
+    function seed() {
+      if (state.seedVersion >= SEED_VERSION) return;
+      const rows = seedRows();
+      const inSeed = (t) => rows.some((s) => s.employee === t.employee && s.title === t.title);
+      const removed = state.tasks.filter((t) => t.from_seed && !inSeed(t)).map((t) => t.id);
+      state.tasks = state.tasks.filter((t) => !removed.includes(t.id));
+      for (const date of Object.keys(state.entries)) removed.forEach((id) => delete state.entries[date][id]);
+      for (const s of rows) {
+        const existing = state.tasks.find((t) => t.employee === s.employee && t.title === s.title);
+        if (existing) Object.assign(existing, { position: s.position, from_seed: true });
+        else state.tasks.push({ ...s, id: newId(), from_seed: true, created_at: new Date().toISOString() });
+      }
+      window.EMPLOYEES.forEach((name, i) => {
+        if (!state.users.some((u) => u.name === name)) state.users.push({ name, password: DEMO.employee, active: true, position: i });
+      });
+      state.seedVersion = SEED_VERSION;
+      save();
+    }
+    seed();
+
+    const me = () => state.session || {};
+    const isAdmin = () => me().role === "admin";
+    const activeUsers = () => state.users.filter((u) => u.active).sort((a, b) => a.position - b.position);
+    const publicUsers = () => activeUsers().map((u) => ({ name: u.name, has_password: Boolean(u.password), active: true }));
+    function payload() {
+      const s = me();
+      return {
+        site_ok: Boolean(s.site_ok),
+        user: s.site_ok && s.role ? { role: s.role, name: s.role === "admin" ? "Admin" : s.name } : null,
+        users: s.site_ok ? publicUsers() : [],
+      };
+    }
+    function requireUser() {
+      if (!me().site_ok) throw apiError("Please sign in.", "site_login");
+      if (!me().role) throw apiError("Please choose who you are.", "user_login");
+    }
+    function requireAdmin() {
+      requireUser();
+      if (!isAdmin()) throw apiError("Only the admin can do that.");
+    }
+    function ownTask(id) {
+      requireUser();
+      const t = state.tasks.find((x) => x.id === id);
+      if (!t) throw apiError("That task no longer exists.");
+      if (!isAdmin() && t.employee !== me().name) throw apiError("That task belongs to someone else.");
+      return t;
+    }
+    const visibleTasks = () => (isAdmin() ? state.tasks : state.tasks.filter((t) => t.employee === me().name));
+    const sorted = (list) =>
+      list.slice().sort((a, b) => a.position - b.position || String(a.created_at).localeCompare(String(b.created_at)));
+
     return {
       mode: "local",
-      async init() {
-        if (state.seedVersion >= SEED_VERSION) return;
-        // Same rules as apply_seed() in schema.sql.
-        const seed = seedRows();
-        const inSeed = (t) => seed.some((s) => s.employee === t.employee && s.title === t.title);
-        const removed = state.tasks.filter((t) => t.from_seed && !inSeed(t)).map((t) => t.id);
-        state.tasks = state.tasks.filter((t) => !removed.includes(t.id));
-        for (const date of Object.keys(state.entries)) {
-          removed.forEach((id) => delete state.entries[date][id]);
-        }
-        for (const s of seed) {
-          const existing = state.tasks.find((t) => t.employee === s.employee && t.title === s.title);
-          if (existing) Object.assign(existing, { position: s.position, from_seed: true });
-          else state.tasks.push({ ...s, id: newId(), from_seed: true, created_at: new Date().toISOString() });
-        }
-        state.seedVersion = SEED_VERSION;
+      async getSession() {
+        return payload();
+      },
+      async siteLogin(password) {
+        if (password !== DEMO.site) throw apiError("Wrong password.", "wrong_password");
+        state.session = { site_ok: true };
         save();
+        return payload();
+      },
+      async userLogin(name, password) {
+        if (!me().site_ok) throw apiError("Enter the dashboard password first.", "site_login");
+        if (name.toLowerCase() === "admin") {
+          if (password !== DEMO.admin) throw apiError("Wrong password.", "wrong_password");
+          state.session = { site_ok: true, role: "admin" };
+        } else {
+          const u = activeUsers().find((x) => x.name === name);
+          if (!u) throw apiError("That person is no longer on the team.");
+          if (!u.password) throw apiError("No password has been set for " + name + " yet. Ask the admin to set one.");
+          if (password !== u.password) throw apiError("Wrong password.", "wrong_password");
+          state.session = { site_ok: true, role: "employee", name };
+        }
+        save();
+        return payload();
+      },
+      async switchUser() {
+        state.session = { site_ok: Boolean(me().site_ok) };
+        save();
+        return payload();
+      },
+      async logout() {
+        state.session = {};
+        save();
+        return payload();
+      },
+      async init() {
+        requireAdmin();
       },
       async listTasks() {
-        return state.tasks
-          .slice()
-          .sort((a, b) => a.position - b.position || String(a.created_at).localeCompare(String(b.created_at)));
+        requireUser();
+        return sorted(visibleTasks());
       },
       async listEntries(date) {
+        requireUser();
+        const ids = new Set(visibleTasks().map((t) => t.id));
         const day = state.entries[date] || {};
-        return Object.keys(day).map((taskId) => ({ task_id: taskId, ...day[taskId] }));
+        return Object.keys(day)
+          .filter((id) => ids.has(id))
+          .map((taskId) => ({ task_id: taskId, ...day[taskId] }));
       },
       async insertTask(row) {
-        state.tasks.push({ ...row, id: newId(), from_seed: false, created_at: new Date().toISOString() });
+        requireAdmin();
+        if (!activeUsers().some((u) => u.name === row.employee)) throw apiError("Choose someone on the team to assign this task to.");
+        const mine = state.tasks.filter((t) => t.employee === row.employee);
+        const position = mine.length ? Math.max(...mine.map((t) => t.position)) + 1 : 0;
+        state.tasks.push({ employee: row.employee, title: row.title, position, id: newId(), from_seed: false, created_at: new Date().toISOString() });
+        save();
+      },
+      async duplicateTask(id) {
+        const t = ownTask(id);
+        const list = sorted(state.tasks.filter((x) => x.employee === t.employee));
+        const base = t.title.replace(/ \(\d+\)$/, "");
+        let max = 1;
+        for (const x of list) {
+          const m = x.title.startsWith(base + " (") && x.title.slice(base.length).match(/^ \((\d+)\)$/);
+          if (m) max = Math.max(max, Number(m[1]));
+        }
+        const copy = { employee: t.employee, title: base + " (" + (max + 1) + ")", id: newId(), from_seed: false, created_at: new Date().toISOString() };
+        let pos = 0;
+        for (const x of list) {
+          x.position = pos++;
+          if (x.id === t.id) copy.position = pos++;
+        }
+        state.tasks.push(copy);
         save();
       },
       async removeTask(id) {
+        requireAdmin();
         state.tasks = state.tasks.filter((t) => t.id !== id);
         for (const date of Object.keys(state.entries)) delete state.entries[date][id];
         save();
       },
       async setPositions(updates) {
-        for (const u of updates) {
-          const t = state.tasks.find((x) => x.id === u.id);
-          if (t) t.position = u.position;
-        }
+        for (const u of updates) ownTask(u.id).position = u.position;
         save();
       },
       async saveEntry(taskId, date, times) {
+        ownTask(taskId);
         state.entries[date] = state.entries[date] || {};
         const old = state.entries[date][taskId] || {};
-        // Write-once times, same as the database trigger.
+        // Write-once times, as on the server.
         state.entries[date][taskId] = {
           ...times,
           start_time: old.start_time || times.start_time || null,
@@ -336,22 +407,77 @@
         save();
       },
       async listWorkDates(employee, from, to) {
-        const ids = new Set(state.tasks.filter((t) => t.employee === employee).map((t) => t.id));
+        requireUser();
+        const who = isAdmin() ? employee : me().name;
+        const ids = new Set(state.tasks.filter((t) => t.employee === who).map((t) => t.id));
         return Object.keys(state.entries).filter(
-          (date) =>
-            date >= from &&
-            date <= to &&
-            Object.entries(state.entries[date]).some(([id, e]) => ids.has(id) && e.start_time)
+          (date) => date >= from && date <= to && Object.entries(state.entries[date]).some(([id, e]) => ids.has(id) && e.start_time)
         );
       },
       async listNotes(date) {
+        requireUser();
         const day = state.notes[date] || {};
-        return Object.keys(day).map((employee) => ({ employee, body: day[employee] }));
+        return Object.keys(day)
+          .filter((employee) => isAdmin() || employee === me().name)
+          .map((employee) => ({ employee, body: day[employee] }));
       },
       async saveNote(employee, date, body) {
+        requireUser();
+        if (!isAdmin() && employee !== me().name) throw apiError("You can only write your own notes.");
         state.notes[date] = state.notes[date] || {};
         state.notes[date][employee] = body;
         save();
+      },
+      async listUsers() {
+        requireAdmin();
+        return publicUsers();
+      },
+      async addUser(name, password) {
+        requireAdmin();
+        if (name.toLowerCase() === "admin") throw apiError('"Admin" is reserved. Choose another name.');
+        const u = state.users.find((x) => x.name === name);
+        if (u && u.active) throw apiError(name + " is already on the team.");
+        const position = state.users.length ? Math.max(...state.users.map((x) => x.position)) + 1 : 0;
+        if (u) Object.assign(u, { active: true, position, password: password || u.password });
+        else state.users.push({ name, password: password || null, active: true, position });
+        save();
+        return publicUsers();
+      },
+      async setUserPassword(name, password) {
+        requireAdmin();
+        if (password.length < 4) throw apiError("Use a password of at least 4 characters.");
+        const u = activeUsers().find((x) => x.name === name);
+        if (u) u.password = password;
+        save();
+        return publicUsers();
+      },
+      async removeUser(name) {
+        requireAdmin();
+        const u = state.users.find((x) => x.name === name);
+        if (u) u.active = false;
+        save();
+        return publicUsers();
+      },
+      async report(from, to) {
+        requireAdmin();
+        const rows = [];
+        for (const date of Object.keys(state.entries).sort()) {
+          if (date < from || date > to) continue;
+          const byEmp = {};
+          for (const [id, e] of Object.entries(state.entries[date])) {
+            const t = state.tasks.find((x) => x.id === id);
+            if (!t || (!e.start_time && !(e.quantity > 0))) continue;
+            const r = (byEmp[t.employee] = byEmp[t.employee] || { employee: t.employee, work_date: date, tasks_started: 0, tasks_done: 0, minutes: 0, quantity: 0 });
+            if (e.start_time) r.tasks_started++;
+            if (e.end_time) {
+              r.tasks_done++;
+              r.minutes += minutesTaken(e, false);
+            }
+            r.quantity += e.quantity || 0;
+          }
+          rows.push(...Object.values(byEmp));
+        }
+        return { from, to, rows };
       },
       subscribe(onChange) {
         window.addEventListener("storage", (e) => {
@@ -364,22 +490,8 @@
     };
   }
 
-  function loadScript(src) {
-    return new Promise((resolve, reject) => {
-      const tag = document.createElement("script");
-      tag.src = src;
-      tag.onload = resolve;
-      tag.onerror = () => reject(new Error("Couldn't load " + src));
-      document.head.append(tag);
-    });
-  }
-
-  async function createStore() {
+  function createStore() {
     if (config.backend === "php") return createPhpStore(config.apiUrl || "api/index.php");
-    if (config.backend === "supabase" && config.supabaseUrl && config.supabaseAnonKey) {
-      await loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js");
-      return createSupabaseStore(config.supabaseUrl, config.supabaseAnonKey);
-    }
     return createLocalStore();
   }
 
@@ -389,40 +501,90 @@
   // UI
   // -------------------------------------------------------------------------
 
+  const $ = (id) => document.getElementById(id);
   const el = {
-    tabs: document.getElementById("tabs"),
-    summary: document.getElementById("summary"),
-    spotlight: document.getElementById("spotlight"),
-    rows: document.getElementById("task-rows"),
-    empty: document.getElementById("empty"),
-    addForm: document.getElementById("add-form"),
-    addInput: document.getElementById("add-input"),
-    banner: document.getElementById("banner"),
-    toast: document.getElementById("toast"),
-    today: document.getElementById("today"),
-    todayDay: document.getElementById("today-day"),
-    todayWeekday: document.getElementById("today-weekday"),
-    todayMonth: document.getElementById("today-month"),
-    dateButton: document.getElementById("date-button"),
-    calendar: document.getElementById("calendar"),
-    notesTitle: document.getElementById("notes-title"),
-    notesInput: document.getElementById("notes-input"),
-    notesStatus: document.getElementById("notes-status"),
-    datePrev: document.getElementById("date-prev"),
-    dateNext: document.getElementById("date-next"),
-    dateToday: document.getElementById("date-today"),
-    dateNote: document.getElementById("date-note"),
-    doneCounter: document.getElementById("done-counter"),
-    qtyHead: document.getElementById("qty-head"),
+    app: $("app"),
+    auth: $("auth"),
+    authSite: $("auth-site"),
+    authPeople: $("auth-people"),
+    authUser: $("auth-user"),
+    sitePassword: $("site-password"),
+    siteError: $("site-error"),
+    people: $("people"),
+    authLock: $("auth-lock"),
+    authBack: $("auth-back"),
+    authAvatar: $("auth-avatar"),
+    authUserTitle: $("auth-user-title"),
+    userPassword: $("user-password"),
+    userError: $("user-error"),
+    userAvatar: $("user-avatar"),
+    userName: $("user-name"),
+    userRole: $("user-role"),
+    switchUser: $("switch-user"),
+    lock: $("lock"),
+    pageTitle: $("page-title"),
+    tabs: $("tabs"),
+    overview: $("overview"),
+    ovDate: $("ov-date"),
+    ovTotals: $("ov-totals"),
+    ovCards: $("ov-cards"),
+    assignForm: $("assign-form"),
+    assignTitle: $("assign-title"),
+    assignTo: $("assign-to"),
+    repPreset: $("rep-preset"),
+    repFrom: $("rep-from"),
+    repTo: $("rep-to"),
+    repHead: $("rep-head"),
+    repBody: $("rep-body"),
+    repFoot: $("rep-foot"),
+    repEmpty: $("rep-empty"),
+    repCsv: $("rep-csv"),
+    team: $("team"),
+    teamList: $("team-list"),
+    addUserForm: $("add-user-form"),
+    newUserName: $("new-user-name"),
+    newUserPassword: $("new-user-password"),
+    tasksPanel: $("tasks-panel"),
+    notesPanel: $("notes-panel"),
+    summary: $("summary"),
+    spotlight: $("spotlight"),
+    rows: $("task-rows"),
+    empty: $("empty"),
+    addForm: $("add-form"),
+    addInput: $("add-input"),
+    banner: $("banner"),
+    toast: $("toast"),
+    today: $("today"),
+    todayDay: $("today-day"),
+    todayWeekday: $("today-weekday"),
+    todayMonth: $("today-month"),
+    dateButton: $("date-button"),
+    calendar: $("calendar"),
+    notesTitle: $("notes-title"),
+    notesInput: $("notes-input"),
+    notesStatus: $("notes-status"),
+    datePrev: $("date-prev"),
+    dateNext: $("date-next"),
+    dateToday: $("date-today"),
+    dateNote: $("date-note"),
+    doneCounter: $("done-counter"),
+    qtyHead: $("qty-head"),
   };
 
+  let me = null; // { role: "admin" | "employee", name }
+  let employees = []; // names of the people whose tasks this person can see
+  let teamUsers = []; // admin: [{ name, has_password }]
   let tasks = [];
   let entries = new Map(); // task_id -> { start_time, end_time, quantity } for selectedDate
-  let active = readActiveTab();
+  let active = null; // an employee name, OVERVIEW or TEAM
   let todayStr = ymd(new Date());
   let selectedDate = todayStr;
   let renderPending = false;
   let notes = new Map(); // employee -> note text for selectedDate
+  let subscribed = false;
+
+  const isAdmin = () => Boolean(me && me.role === "admin");
+  const isPersonTab = () => active !== OVERVIEW && active !== TEAM;
 
   function isToday() {
     return selectedDate === todayStr;
@@ -432,21 +594,29 @@
     return entries.get(taskId) || EMPTY_ENTRY;
   }
 
-  function readActiveTab() {
+  function tabKey() {
+    return "sop-dashboard:tab:" + (me ? me.role + ":" + me.name : "");
+  }
+
+  function defaultTab() {
+    if (!isAdmin()) return employees[0];
     try {
-      const saved = localStorage.getItem("sop-dashboard:tab");
-      if (EMPLOYEES.includes(saved)) return saved;
+      const saved = localStorage.getItem(tabKey());
+      if (saved === OVERVIEW || saved === TEAM || employees.includes(saved)) return saved;
     } catch (e) {}
-    return EMPLOYEES[0];
+    return OVERVIEW;
   }
 
   function setActiveTab(name) {
     flushNote();
     active = name;
     try {
-      localStorage.setItem("sop-dashboard:tab", name);
+      localStorage.setItem(tabKey(), name);
     } catch (e) {}
+    if (calendarOpen) toggleCalendar(false);
     render();
+    if (active === OVERVIEW) loadReport();
+    if (active === TEAM) loadTeam();
   }
 
   function setDate(date) {
@@ -462,21 +632,39 @@
 
   function showToast(msg) {
     el.toast.textContent = msg;
+    el.toast.classList.toggle("toast-error", /^(Couldn't|Can't)/.test(msg));
     el.toast.hidden = false;
     clearTimeout(showToast.timer);
     showToast.timer = setTimeout(() => (el.toast.hidden = true), 4000);
   }
 
+  function showBanner(text, isError) {
+    el.banner.textContent = text;
+    el.banner.classList.toggle("banner-error", Boolean(isError));
+    el.banner.hidden = false;
+  }
+
+  // The server says this browser is no longer signed in (e.g. the admin
+  // changed someone's password): go back to the sign-in screen.
+  function handleAuthError(e) {
+    if (e && (e.code === "site_login" || e.code === "user_login")) {
+      reloadSession();
+      return true;
+    }
+    return false;
+  }
+
   async function refresh() {
+    if (!me) return;
     const date = selectedDate;
     let t, e, n;
     try {
       [t, e, n] = await Promise.all([store.listTasks(), store.listEntries(date), store.listNotes(date)]);
     } catch (err) {
-      showToast("Couldn't load tasks: " + err.message);
+      if (!handleAuthError(err)) showToast("Couldn't load tasks: " + err.message);
       return;
     }
-    if (date !== selectedDate) return; // the date changed while loading
+    if (date !== selectedDate || !me) return; // changed while loading
     tasks = t;
     entries = new Map(
       e.map((x) => [x.task_id, { start_time: x.start_time, end_time: x.end_time, quantity: x.quantity ?? null }])
@@ -486,7 +674,7 @@
     if (calendarOpen) loadCalendarDots();
   }
 
-  // Coalesce bursts of realtime events (e.g. a reseed) into one reload.
+  // Coalesce bursts of change notifications into one reload.
   let refreshTimer;
   function scheduleRefresh() {
     clearTimeout(refreshTimer);
@@ -500,7 +688,7 @@
     try {
       await remoteCall();
     } catch (e) {
-      showToast("Couldn't save: " + e.message);
+      if (!handleAuthError(e)) showToast("Couldn't save: " + e.message);
       refresh();
     }
   }
@@ -513,6 +701,17 @@
     const c = { todo: 0, in_progress: 0, done: 0 };
     list.forEach((t) => c[statusOf(entryFor(t.id))]++);
     return c;
+  }
+
+  function finishedMinutes(list) {
+    return list
+      .map((t) => entryFor(t.id))
+      .filter((e) => e.start_time && e.end_time)
+      .reduce((sum, e) => sum + minutesTaken(e, false), 0);
+  }
+
+  function quantityTotal(list) {
+    return list.reduce((sum, t) => sum + (entryFor(t.id).quantity || 0), 0);
   }
 
   function renderDate() {
@@ -534,19 +733,12 @@
   }
 
   function renderDoneCounter(list) {
-    const noun = DONE_COUNTERS[active];
+    const noun = isPersonTab() && DONE_COUNTERS[active];
     el.doneCounter.hidden = !noun;
     if (!noun) return;
-    const total = list.reduce((sum, t) => sum + (entryFor(t.id).quantity || 0), 0);
-    const finished = countStatuses(list).done;
-    const n = document.createElement("strong");
-    n.textContent = total;
-    const label = document.createElement("span");
-    label.className = "done-label";
-    label.textContent = noun + " done " + (isToday() ? "today" : "on this day");
-    const sub = document.createElement("span");
-    sub.className = "done-sub";
-    sub.textContent = finished + " / " + list.length + " tasks finished";
+    const n = h("strong", "", quantityTotal(list));
+    const label = h("span", "done-label", noun + " done " + (isToday() ? "today" : "on this day"));
+    const sub = h("span", "done-sub", countStatuses(list).done + " / " + list.length + " tasks finished");
     el.doneCounter.replaceChildren(n, label, sub);
   }
 
@@ -557,70 +749,54 @@
     el.spotlight.replaceChildren(
       ...running.map((task) => {
         const entry = entryFor(task.id);
-        const item = document.createElement("div");
-        item.className = "spotlight-item";
-        const eyebrow = document.createElement("span");
-        eyebrow.className = "spotlight-eyebrow";
-        eyebrow.textContent = "In Progress";
-        const title = document.createElement("strong");
-        title.className = "spotlight-title";
-        title.textContent = task.title;
-        const meta = document.createElement("span");
-        meta.className = "spotlight-meta";
+        const item = h("div", "spotlight-item");
         const mins = minutesTaken(entry, isToday());
-        meta.textContent =
-          "Started " + formatClock(entry.start_time) + " · " + (mins === null ? "no end time" : formatDuration(mins) + " so far");
-        item.append(eyebrow, title, meta);
+        item.append(
+          h("span", "spotlight-eyebrow", "In Progress"),
+          h("strong", "spotlight-title", task.title),
+          h(
+            "span",
+            "spotlight-meta",
+            "Started " + formatClock(entry.start_time) + " · " + (mins === null ? "no end time" : formatDuration(mins) + " so far")
+          )
+        );
         return item;
       })
     );
   }
 
   function renderTabs() {
+    // Employees only ever see their own list, so they get no tabs.
+    el.tabs.hidden = !isAdmin();
+    if (!isAdmin()) return;
+    const tab = (key, label, badge, extraClass) => {
+      const btn = h("button", "tab" + (extraClass ? " " + extraClass : ""));
+      btn.type = "button";
+      btn.setAttribute("role", "tab");
+      btn.setAttribute("aria-selected", String(key === active));
+      btn.append(h("span", "", label));
+      if (badge !== undefined) btn.append(h("span", "tab-count", badge));
+      btn.addEventListener("click", () => setActiveTab(key));
+      return btn;
+    };
     el.tabs.replaceChildren(
-      ...EMPLOYEES.map((name) => {
+      tab(OVERVIEW, "Overview", undefined, "tab-admin"),
+      ...employees.map((name) => {
         const list = tasksFor(name);
-        const done = countStatuses(list).done;
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "tab";
-        btn.setAttribute("role", "tab");
-        btn.setAttribute("aria-selected", String(name === active));
-        const label = document.createElement("span");
-        label.textContent = name;
-        const badge = document.createElement("span");
-        badge.className = "tab-count";
-        badge.textContent = done + "/" + list.length;
-        btn.append(label, badge);
-        btn.addEventListener("click", () => setActiveTab(name));
-        return btn;
-      })
+        return tab(name, name, countStatuses(list).done + "/" + list.length);
+      }),
+      tab(TEAM, "Team", undefined, "tab-admin")
     );
   }
 
   function renderSummary(list) {
     const c = countStatuses(list);
-    const total = list
-      .map((t) => entryFor(t.id))
-      .filter((e) => e.start_time && e.end_time)
-      .reduce((sum, e) => sum + minutesTaken(e, false), 0);
-    const totalChip = document.createElement("div");
-    totalChip.className = "summary-chip summary-total";
-    const totalN = document.createElement("strong");
-    totalN.textContent = formatDuration(total);
-    const totalLabel = document.createElement("span");
-    totalLabel.textContent = "Total Time Taken";
-    totalChip.append(totalN, totalLabel);
-
+    const totalChip = h("div", "summary-chip summary-total");
+    totalChip.append(h("strong", "", formatDuration(finishedMinutes(list))), h("span", "", "Total Time Taken"));
     el.summary.replaceChildren(
       ...["todo", "in_progress", "done"].map((s) => {
-        const chip = document.createElement("div");
-        chip.className = "summary-chip status-" + s;
-        const n = document.createElement("strong");
-        n.textContent = c[s];
-        const label = document.createElement("span");
-        label.textContent = STATUS_LABEL[s];
-        chip.append(n, label);
+        const chip = h("div", "summary-chip status-" + s);
+        chip.append(h("strong", "", c[s]), h("span", "", STATUS_LABEL[s]));
         return chip;
       }),
       totalChip
@@ -631,24 +807,18 @@
   // that stamps the current time once; after that the time is locked.
   // Other days are view-only.
   function timeCell(task, entry, field) {
-    const td = document.createElement("td");
-    td.className = "time-cell";
+    const td = h("td", "time-cell");
     td.dataset.label = field === "start_time" ? "Start" : "End";
-    const wrap = document.createElement("div");
-    wrap.className = "time-wrap";
+    const wrap = h("div", "time-wrap");
 
     if (entry[field]) {
-      const value = document.createElement("span");
-      value.className = "time-value";
-      value.textContent = formatClock(entry[field]);
+      const value = h("span", "time-value", formatClock(entry[field]));
       value.title = "Recorded time (locked)";
       wrap.append(value);
     } else if (isToday()) {
       const isStart = field === "start_time";
-      const btn = document.createElement("button");
+      const btn = h("button", "btn-stamp " + (isStart ? "btn-stamp-start" : "btn-stamp-end"), isStart ? "Start" : "End");
       btn.type = "button";
-      btn.className = "btn-stamp " + (isStart ? "btn-stamp-start" : "btn-stamp-end");
-      btn.textContent = isStart ? "Start" : "End";
       btn.setAttribute("aria-label", (isStart ? "Start " : "End ") + task.title + " now");
       if (!isStart && !entry.start_time) {
         btn.disabled = true;
@@ -657,41 +827,31 @@
       btn.addEventListener("click", () => stampTime(task.id, field));
       wrap.append(btn);
     } else {
-      const none = document.createElement("span");
-      none.className = "time-none";
-      none.textContent = "—";
-      wrap.append(none);
+      wrap.append(h("span", "time-none", "—"));
     }
     td.append(wrap);
     return td;
   }
 
-  // Tabs listed in DONE_COUNTERS get a per-task count column (e.g. videos).
+  // People listed in DONE_COUNTERS get a per-task count column (e.g. videos).
   function countsItems() {
-    return Boolean(DONE_COUNTERS[active]);
+    return isPersonTab() && Boolean(DONE_COUNTERS[active]);
   }
 
   function quantityCell(task, entry) {
-    const td = document.createElement("td");
-    td.className = "qty-cell";
-    td.dataset.label = DONE_COUNTERS[active].replace(/^./, (c) => c.toUpperCase());
-    const wrap = document.createElement("div");
-    wrap.className = "qty-wrap";
+    const td = h("td", "qty-cell");
+    td.dataset.label = capitalize(DONE_COUNTERS[active]);
+    const wrap = h("div", "qty-wrap");
     const value = entry.quantity || 0;
 
     if (!isToday()) {
-      const v = document.createElement("span");
-      v.className = "qty-value";
-      v.textContent = value;
-      wrap.append(v);
+      wrap.append(h("span", "qty-value", value));
       td.append(wrap);
       return td;
     }
 
-    const minus = document.createElement("button");
+    const minus = h("button", "btn-step btn-qty", "−");
     minus.type = "button";
-    minus.className = "btn-step btn-qty";
-    minus.textContent = "−";
     minus.disabled = value <= 0;
     minus.setAttribute("aria-label", "One less for " + task.title);
     minus.addEventListener("click", () => setQuantity(task.id, value - 1));
@@ -709,10 +869,8 @@
       setQuantity(task.id, Number.isFinite(n) && n > 0 ? n : null);
     });
 
-    const plus = document.createElement("button");
+    const plus = h("button", "btn-step btn-qty", "+");
     plus.type = "button";
-    plus.className = "btn-step btn-qty";
-    plus.textContent = "+";
     plus.setAttribute("aria-label", "One more for " + task.title);
     plus.addEventListener("click", () => setQuantity(task.id, value + 1));
 
@@ -728,25 +886,14 @@
         const entry = entryFor(task.id);
         const status = statusOf(entry);
 
-        const num = document.createElement("td");
-        num.className = "num";
-        num.textContent = i + 1;
-
-        const title = document.createElement("td");
-        title.className = "title";
-        title.textContent = task.title;
-
-        const st = document.createElement("td");
-        st.className = "status-cell";
-        const pill = document.createElement("span");
-        pill.className = "pill status-" + status;
-        pill.textContent = STATUS_LABEL[status];
-        st.append(pill);
+        const num = h("td", "num", i + 1);
+        const title = h("td", "title", task.title);
+        const st = h("td", "status-cell");
+        st.append(h("span", "pill status-" + status, STATUS_LABEL[status]));
 
         const qty = countsItems() ? quantityCell(task, entry) : null;
 
-        const taken = document.createElement("td");
-        taken.className = "taken-cell";
+        const taken = h("td", "taken-cell");
         taken.dataset.label = "Taken";
         const mins = minutesTaken(entry, isToday());
         if (status === "done" && mins !== null) {
@@ -762,23 +909,24 @@
           taken.classList.add("taken-none");
         }
 
-        const actions = document.createElement("td");
-        actions.className = "actions";
-        const tools = document.createElement("div");
-        tools.className = "row-tools";
+        const actions = h("td", "actions");
+        const tools = h("div", "row-tools");
         const up = iconButton("up", "Move " + task.title + " up", "btn-tool", () => moveTask(task, -1));
         up.disabled = i === 0;
         const down = iconButton("down", "Move " + task.title + " down", "btn-tool", () => moveTask(task, 1));
         down.disabled = i === list.length - 1;
         const copy = iconButton("copy", "Duplicate " + task.title, "btn-tool", () => duplicateTask(task));
-        const del = iconButton("trash", "Delete " + task.title, "btn-tool btn-delete", () => {
-          // Two-step delete: first click arms the button, second click deletes.
-          if (del.classList.contains("armed")) return deleteTask(task);
-          del.classList.add("armed");
-          del.textContent = "Delete?";
-          setTimeout(() => render(), 3000);
-        });
-        tools.append(up, down, copy, del);
+        tools.append(up, down, copy);
+        if (isAdmin()) {
+          const del = iconButton("trash", "Delete " + task.title, "btn-tool btn-delete", () => {
+            // Two-step delete: first click arms the button, second click deletes.
+            if (del.classList.contains("armed")) return deleteTask(task);
+            del.classList.add("armed");
+            del.textContent = "Delete?";
+            setTimeout(() => render(), 3000);
+          });
+          tools.append(del);
+        }
         actions.append(tools);
 
         tr.append(
@@ -795,11 +943,339 @@
       })
     );
     el.empty.hidden = list.length > 0;
+    el.empty.textContent = isAdmin() ? "No tasks yet. Add one below." : "No tasks assigned to you yet.";
   }
 
+  // ---- Admin: overview of everyone on the selected day -----------------------
+
+  function renderOverview() {
+    el.ovDate.textContent = isToday() ? "today" : parseYmd(selectedDate).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+
+    let done = 0;
+    let total = 0;
+    let running = 0;
+    const cards = employees.map((name) => {
+      const list = tasksFor(name);
+      const c = countStatuses(list);
+      done += c.done;
+      total += list.length;
+      running += c.in_progress;
+
+      const card = h("button", "ov-card");
+      card.type = "button";
+      card.setAttribute("aria-label", "Open " + name + "'s tasks");
+      card.addEventListener("click", () => setActiveTab(name));
+
+      const head = h("div", "ov-card-head");
+      const av = h("span", "avatar");
+      paintAvatar(av, name);
+      head.append(av, h("strong", "ov-name", name), h("span", "ov-count", c.done + "/" + list.length));
+
+      const bar = h("div", "ov-bar");
+      bar.setAttribute("role", "img");
+      bar.setAttribute("aria-label", c.done + " of " + list.length + " done, " + c.in_progress + " in progress");
+      const pct = (n) => (list.length ? (n / list.length) * 100 : 0) + "%";
+      const fillDone = h("span", "ov-bar-done");
+      fillDone.style.width = pct(c.done);
+      const fillRun = h("span", "ov-bar-running");
+      fillRun.style.width = pct(c.in_progress);
+      bar.append(fillDone, fillRun);
+
+      const now = list.filter((t) => statusOf(entryFor(t.id)) === "in_progress");
+      const nowLine = h("p", "ov-now");
+      if (now.length) {
+        const e = entryFor(now[0].id);
+        nowLine.append(h("span", "ov-now-dot"), h("span", "ov-now-title", now[0].title));
+        nowLine.append(h("span", "ov-now-meta", " · since " + formatClock(e.start_time) + (now.length > 1 ? " · +" + (now.length - 1) + " more" : "")));
+      } else {
+        nowLine.classList.add("ov-idle");
+        nowLine.textContent = c.done === list.length && list.length ? "All tasks done" : "Nothing in progress";
+      }
+
+      const stats = h("dl", "ov-stats");
+      const stat = (label, value) => {
+        const d = h("div");
+        d.append(h("dt", "", label), h("dd", "", value));
+        stats.append(d);
+      };
+      stat("Time", formatDuration(finishedMinutes(list)));
+      stat("To do", c.todo);
+      if (DONE_COUNTERS[name]) stat(capitalize(DONE_COUNTERS[name]), quantityTotal(list));
+
+      card.append(head, bar, nowLine, stats);
+      return card;
+    });
+    el.ovCards.replaceChildren(...cards);
+
+    const chip = (n, label, cls) => {
+      const c = h("span", "ov-total " + cls);
+      c.append(h("strong", "", n), h("span", "", label));
+      return c;
+    };
+    el.ovTotals.replaceChildren(chip(done + "/" + total, "tasks done", "status-done"), chip(running, "in progress", "status-in_progress"));
+
+    // Keep the "Assign to" list in step with the team.
+    const current = el.assignTo.value;
+    const options = employees.map((name) => {
+      const o = document.createElement("option");
+      o.value = name;
+      o.textContent = name;
+      return o;
+    });
+    if (options.map((o) => o.value).join("\u0001") !== Array.from(el.assignTo.options, (o) => o.value).join("\u0001")) {
+      el.assignTo.replaceChildren(...options);
+      if (employees.includes(current)) el.assignTo.value = current;
+    }
+  }
+
+  // ---- Admin: reports --------------------------------------------------------
+
+  let reportData = null;
+
+  function reportRange() {
+    const preset = el.repPreset.value;
+    const t = parseYmd(todayStr);
+    const monday = addDays(todayStr, -((t.getDay() + 6) % 7));
+    switch (preset) {
+      case "today":
+        return [todayStr, todayStr];
+      case "yesterday":
+        return [addDays(todayStr, -1), addDays(todayStr, -1)];
+      case "week":
+        return [monday, todayStr];
+      case "last7":
+        return [addDays(todayStr, -6), todayStr];
+      case "month":
+        return [todayStr.slice(0, 8) + "01", todayStr];
+      case "lastmonth": {
+        const first = new Date(t.getFullYear(), t.getMonth() - 1, 1);
+        const last = new Date(t.getFullYear(), t.getMonth(), 0);
+        return [ymd(first), ymd(last)];
+      }
+      default:
+        return [el.repFrom.value || todayStr, el.repTo.value || todayStr];
+    }
+  }
+
+  async function loadReport() {
+    if (!isAdmin()) return;
+    const [from, to] = reportRange();
+    el.repFrom.value = from;
+    el.repTo.value = to;
+    try {
+      reportData = await store.report(from, to);
+    } catch (e) {
+      if (!handleAuthError(e)) showToast("Couldn't load the report: " + e.message);
+      return;
+    }
+    renderReport();
+  }
+
+  function reportTotals() {
+    const byEmp = new Map(employees.map((name) => [name, { days: new Set(), done: 0, started: 0, minutes: 0, quantity: 0 }]));
+    for (const r of reportData ? reportData.rows : []) {
+      if (!byEmp.has(r.employee)) byEmp.set(r.employee, { days: new Set(), done: 0, started: 0, minutes: 0, quantity: 0 });
+      const x = byEmp.get(r.employee);
+      x.days.add(r.work_date);
+      x.done += r.tasks_done;
+      x.started += r.tasks_started;
+      x.minutes += r.minutes;
+      x.quantity += r.quantity;
+    }
+    return byEmp;
+  }
+
+  function renderReport() {
+    if (!reportData) return;
+    const hasQty = Object.keys(DONE_COUNTERS).length > 0;
+    const qtyLabel = hasQty ? capitalize(Object.values(DONE_COUNTERS)[0]) : "";
+    const headRow = h("tr");
+    ["Employee", "Days worked", "Tasks done", "Time taken", "Avg per day"].concat(hasQty ? [qtyLabel] : []).forEach((label, i) => {
+      headRow.append(h("th", i ? "num-col" : "", label));
+    });
+    el.repHead.replaceChildren(headRow);
+
+    const totals = reportTotals();
+    let sumDays = 0, sumDone = 0, sumMin = 0, sumQty = 0;
+    const rows = [];
+    for (const [name, x] of totals) {
+      const tr = h("tr");
+      const who = h("td", "rep-name");
+      const av = h("span", "avatar avatar-sm");
+      paintAvatar(av, name);
+      who.append(av, h("span", "", name));
+      tr.append(
+        who,
+        h("td", "num-col", x.days.size),
+        h("td", "num-col", x.done),
+        h("td", "num-col", formatDuration(x.minutes)),
+        h("td", "num-col", x.days.size ? formatDuration(Math.round(x.minutes / x.days.size)) : "—")
+      );
+      if (hasQty) tr.append(h("td", "num-col", DONE_COUNTERS[name] ? x.quantity : "—"));
+      rows.push(tr);
+      sumDays += x.days.size;
+      sumDone += x.done;
+      sumMin += x.minutes;
+      sumQty += x.quantity;
+    }
+    el.repBody.replaceChildren(...rows);
+
+    const foot = h("tr");
+    foot.append(h("td", "", "Total"), h("td", "num-col", sumDays), h("td", "num-col", sumDone), h("td", "num-col", formatDuration(sumMin)), h("td", "num-col", ""));
+    if (hasQty) foot.append(h("td", "num-col", sumQty));
+    el.repFoot.replaceChildren(foot);
+    el.repEmpty.hidden = reportData.rows.length > 0;
+  }
+
+  function downloadCsv() {
+    if (!reportData) return;
+    const esc = (v) => {
+      const s = String(v);
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const lines = [["Date", "Employee", "Tasks started", "Tasks done", "Minutes", "Time", "Items done"].join(",")];
+    for (const r of reportData.rows) {
+      lines.push([r.work_date, r.employee, r.tasks_started, r.tasks_done, r.minutes, formatDuration(r.minutes), r.quantity].map(esc).join(","));
+    }
+    const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "sop-report-" + reportData.from + "-to-" + reportData.to + ".csv";
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  el.repPreset.addEventListener("change", loadReport);
+  for (const input of [el.repFrom, el.repTo]) {
+    input.addEventListener("change", () => {
+      el.repPreset.value = "custom";
+      loadReport();
+    });
+  }
+  el.repCsv.addEventListener("click", downloadCsv);
+
+  el.assignForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = el.assignTitle.value.trim();
+    const employee = el.assignTo.value;
+    if (!title || !employee) return;
+    try {
+      await store.insertTask({ employee, title });
+    } catch (err) {
+      if (!handleAuthError(err)) showToast("Couldn't assign the task: " + err.message);
+      return;
+    }
+    el.assignTitle.value = "";
+    showToast("Assigned “" + title + "” to " + employee);
+    refresh();
+  });
+
+  // ---- Admin: team -----------------------------------------------------------
+
+  async function loadTeam() {
+    try {
+      teamUsers = await store.listUsers();
+    } catch (e) {
+      if (!handleAuthError(e)) showToast("Couldn't load the team: " + e.message);
+      return;
+    }
+    applyTeam(teamUsers);
+  }
+
+  function applyTeam(users) {
+    teamUsers = users;
+    const names = users.map((u) => u.name);
+    if (names.join("\u0001") !== employees.join("\u0001")) {
+      employees = names;
+      if (isPersonTab() && !employees.includes(active)) active = OVERVIEW;
+    }
+    render();
+  }
+
+  function renderTeam() {
+    el.teamList.replaceChildren(
+      ...teamUsers.map((u) => {
+        const row = h("div", "team-row");
+        const who = h("div", "team-who");
+        const av = h("span", "avatar");
+        paintAvatar(av, u.name);
+        const text = h("div");
+        text.append(h("strong", "", u.name), h("span", "team-state " + (u.has_password ? "is-set" : "is-missing"), u.has_password ? "Password set" : "No password yet: can't sign in"));
+        who.append(av, text);
+
+        const form = h("form", "team-pass");
+        form.autocomplete = "off";
+        const input = document.createElement("input");
+        input.type = "text";
+        input.minLength = 4;
+        input.maxLength = 100;
+        input.required = true;
+        input.placeholder = u.has_password ? "New password" : "Set a password";
+        input.setAttribute("aria-label", "New password for " + u.name);
+        input.autocomplete = "new-password";
+        const save = h("button", "btn-secondary", u.has_password ? "Change" : "Set password");
+        save.type = "submit";
+        form.append(input, save);
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          try {
+            applyTeam(await store.setUserPassword(u.name, input.value));
+            showToast("Password saved for " + u.name + ". Tell them the new password.");
+          } catch (err) {
+            if (!handleAuthError(err)) showToast("Couldn't save: " + err.message);
+          }
+        });
+
+        const remove = h("button", "btn-link btn-danger", "Remove");
+        remove.type = "button";
+        remove.addEventListener("click", async () => {
+          if (!remove.classList.contains("armed")) {
+            remove.classList.add("armed");
+            remove.textContent = "Remove " + u.name + "?";
+            setTimeout(() => {
+              remove.classList.remove("armed");
+              remove.textContent = "Remove";
+            }, 3000);
+            return;
+          }
+          try {
+            applyTeam(await store.removeUser(u.name));
+            showToast(u.name + " was removed. Their past work stays in the reports.");
+          } catch (err) {
+            if (!handleAuthError(err)) showToast("Couldn't remove: " + err.message);
+          }
+        });
+
+        row.append(who, form, remove);
+        return row;
+      })
+    );
+  }
+
+  el.addUserForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = el.newUserName.value.trim();
+    const password = el.newUserPassword.value;
+    if (!name) return;
+    try {
+      applyTeam(await store.addUser(name, password));
+    } catch (err) {
+      if (!handleAuthError(err)) showToast("Couldn't add: " + err.message);
+      return;
+    }
+    el.newUserName.value = "";
+    el.newUserPassword.value = "";
+    showToast(name + " was added. Assign tasks from the Overview.");
+  });
+
+  // ---- Main render -------------------------------------------------------------
+
   function render() {
+    if (!me) return;
     renderDate();
-    // Don't rebuild the table under someone who is mid-edit in a time field;
+    // Don't rebuild the table under someone who is mid-edit in a number field;
     // catch up once they leave it.
     const focused = document.activeElement;
     if (focused && focused.type === "number" && el.rows.contains(focused)) {
@@ -807,15 +1283,29 @@
       return;
     }
     renderPending = false;
-    const list = tasksFor(active);
     renderTabs();
+
+    const person = isPersonTab();
+    el.overview.hidden = active !== OVERVIEW;
+    el.team.hidden = active !== TEAM;
+    el.tasksPanel.hidden = !person;
+    el.notesPanel.hidden = !person;
+
+    el.pageTitle.textContent = isAdmin() ? "Team SOP Dashboard" : me.name + "’s Tasks";
+
+    const list = person ? tasksFor(active) : [];
+    renderDoneCounter(list);
+    if (active === OVERVIEW) renderOverview();
+    if (active === TEAM) renderTeam();
+    if (!person) return;
+
     renderSpotlight(list);
     renderSummary(list);
-    renderDoneCounter(list);
     el.qtyHead.hidden = !countsItems();
-    if (countsItems()) el.qtyHead.textContent = DONE_COUNTERS[active].replace(/^./, (c) => c.toUpperCase()) + " Done";
+    if (countsItems()) el.qtyHead.textContent = capitalize(DONE_COUNTERS[active]) + " Done";
     renderRows(list);
     renderNotes();
+    el.addForm.hidden = !isAdmin();
     el.addInput.placeholder = "Add a task for " + active + "…";
   }
 
@@ -848,7 +1338,7 @@
     saveEntryField(taskId, "quantity", value > 0 ? value : null);
   }
 
-  // Save a new order for one employee's list: positions become 0..n-1 and
+  // Save a new order for one person's list: positions become 0..n-1 and
   // only the tasks whose position changed are written.
   function applyOrder(ordered) {
     const updates = [];
@@ -871,39 +1361,16 @@
     try {
       await applyOrder(list);
     } catch (e) {
-      showToast("Couldn't reorder: " + e.message);
+      if (!handleAuthError(e)) showToast("Couldn't reorder: " + e.message);
       refresh();
     }
   }
 
-  // "Dr. Nandini Video" -> "Dr. Nandini Video (2)", then "(3)", and so on.
-  function copyTitle(title, employee) {
-    const base = title.replace(/ \(\d+\)$/, "");
-    let max = 1;
-    for (const t of tasksFor(employee)) {
-      if (t.title === base) continue;
-      const m = t.title.startsWith(base + " (") && t.title.slice(base.length).match(/^ \((\d+)\)$/);
-      if (m) max = Math.max(max, Number(m[1]));
-    }
-    return base + " (" + (max + 1) + ")";
-  }
-
   async function duplicateTask(task) {
-    const list = tasksFor(task.employee);
-    const i = list.findIndex((t) => t.id === task.id);
-    const title = copyTitle(task.title, task.employee);
     try {
-      // Number the list 0..n-1, move everything below the original down one
-      // place, then insert the copy directly below the original.
-      await applyOrder(list);
-      const shift = list.slice(i + 1).map((t, k) => ({ id: t.id, position: i + 2 + k }));
-      if (shift.length) {
-        shift.forEach((u) => (tasks.find((t) => t.id === u.id).position = u.position));
-        await store.setPositions(shift);
-      }
-      await store.insertTask({ employee: task.employee, title, position: i + 1 });
+      await store.duplicateTask(task.id);
     } catch (e) {
-      showToast("Couldn't duplicate: " + e.message);
+      if (!handleAuthError(e)) showToast("Couldn't duplicate: " + e.message);
     }
     refresh();
   }
@@ -918,21 +1385,19 @@
   el.addForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const title = el.addInput.value.trim();
-    if (!title) return;
-    const list = tasksFor(active);
-    const position = list.length ? Math.max(...list.map((t) => t.position)) + 1 : 0;
+    if (!title || !isPersonTab()) return;
     el.addInput.value = "";
     try {
-      await store.insertTask({ employee: active, title, position });
+      await store.insertTask({ employee: active, title });
     } catch (err) {
-      showToast("Couldn't add task: " + err.message);
+      if (!handleAuthError(err)) showToast("Couldn't add task: " + err.message);
       el.addInput.value = title;
       return;
     }
     refresh();
   });
 
-  // ---- Notepad: one note per employee per day, saved as you type. ----------
+  // ---- Notepad: one note per person per day, saved as you type. -------------
 
   let noteTimer = null;
   let notePending = null; // { employee, date, body } waiting to be saved
@@ -943,16 +1408,15 @@
   }
 
   function renderNotes() {
-    const d = parseYmd(selectedDate);
-    el.notesTitle.textContent =
-      "Notes · " + active + " · " + d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-    el.notesInput.placeholder = "Notes for " + active + (isToday() ? " today" : " on this day") + "…";
+    el.notesTitle.textContent = "Notes · " + active + " · " + shortDate(selectedDate);
+    el.notesInput.placeholder = "Notes for " + (isAdmin() ? active : "you") + (isToday() ? " today" : " on this day") + "…";
     // Don't overwrite what someone is typing; do switch when tab or date changes.
     const typing = document.activeElement === el.notesInput;
     if (noteShownFor !== noteKey() || !typing) {
-      const body = notePending && notePending.employee === active && notePending.date === selectedDate
-        ? notePending.body
-        : notes.get(active) || "";
+      const body =
+        notePending && notePending.employee === active && notePending.date === selectedDate
+          ? notePending.body
+          : notes.get(active) || "";
       if (el.notesInput.value !== body) el.notesInput.value = body;
       if (noteShownFor !== noteKey()) el.notesStatus.textContent = "";
       noteShownFor = noteKey();
@@ -963,18 +1427,19 @@
     clearTimeout(noteTimer);
     const pending = notePending;
     notePending = null;
-    if (!pending) return;
+    if (!pending || !store) return;
     try {
       await store.saveNote(pending.employee, pending.date, pending.body);
       if (pending.date === selectedDate) notes.set(pending.employee, pending.body);
       if (pending.employee + "|" + pending.date === noteKey()) el.notesStatus.textContent = "Saved";
     } catch (e) {
-      showToast("Couldn't save notes: " + e.message);
+      if (!handleAuthError(e)) showToast("Couldn't save notes: " + e.message);
       if (pending.employee + "|" + pending.date === noteKey()) el.notesStatus.textContent = "Not saved";
     }
   }
 
   el.notesInput.addEventListener("input", () => {
+    if (!isPersonTab()) return;
     notePending = { employee: active, date: selectedDate, body: el.notesInput.value };
     el.notesStatus.textContent = "Saving…";
     clearTimeout(noteTimer);
@@ -995,6 +1460,7 @@
   }
 
   async function loadCalendarDots() {
+    if (!isPersonTab()) return; // dots are per person
     const month = calendarMonth;
     const { first, last } = monthBounds(month);
     try {
@@ -1009,41 +1475,29 @@
 
   function renderCalendar() {
     const { first, last } = monthBounds(calendarMonth);
-    const head = document.createElement("div");
-    head.className = "cal-head";
-    const prev = document.createElement("button");
+    const head = h("div", "cal-head");
+    const prev = h("button", "btn-step");
     prev.type = "button";
-    prev.className = "btn-step";
     prev.innerHTML = "&#8249;";
     prev.setAttribute("aria-label", "Previous month");
     prev.addEventListener("click", () => shiftMonth(-1));
-    const label = document.createElement("strong");
-    label.textContent = first.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-    const next = document.createElement("button");
+    const label = h("strong", "", first.toLocaleDateString("en-GB", { month: "long", year: "numeric" }));
+    const next = h("button", "btn-step");
     next.type = "button";
-    next.className = "btn-step";
     next.innerHTML = "&#8250;";
     next.setAttribute("aria-label", "Next month");
     next.disabled = calendarMonth >= todayStr.slice(0, 7);
     next.addEventListener("click", () => shiftMonth(1));
     head.append(prev, label, next);
 
-    const grid = document.createElement("div");
-    grid.className = "cal-grid";
+    const grid = h("div", "cal-grid");
     grid.setAttribute("role", "grid");
-    for (const wd of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
-      const h = document.createElement("span");
-      h.className = "cal-wd";
-      h.textContent = wd;
-      grid.append(h);
-    }
+    for (const wd of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) grid.append(h("span", "cal-wd", wd));
     for (let i = 0; i < first.getDay(); i++) grid.append(document.createElement("span"));
     for (let day = 1; day <= last.getDate(); day++) {
       const date = calendarMonth + "-" + String(day).padStart(2, "0");
-      const b = document.createElement("button");
+      const b = h("button", "cal-day", day);
       b.type = "button";
-      b.className = "cal-day";
-      b.textContent = day;
       if (date === todayStr) b.classList.add("is-today");
       if (date === selectedDate) b.classList.add("is-selected");
       if (calendarDots.has(date)) b.classList.add("has-work");
@@ -1056,15 +1510,10 @@
       grid.append(b);
     }
 
-    const foot = document.createElement("div");
-    foot.className = "cal-foot";
-    const legend = document.createElement("span");
-    legend.className = "cal-legend";
-    legend.textContent = "Dot = work recorded for " + active;
-    const todayBtn = document.createElement("button");
+    const foot = h("div", "cal-foot");
+    const legend = h("span", "cal-legend", isPersonTab() ? "Dot = work recorded for " + active : "Pick a day to see the team");
+    const todayBtn = h("button", "btn-now", "Today");
     todayBtn.type = "button";
-    todayBtn.className = "btn-now";
-    todayBtn.textContent = "Today";
     todayBtn.addEventListener("click", () => {
       setDate(todayStr);
       toggleCalendar(false);
@@ -1125,31 +1574,156 @@
     render();
   }, 60 * 1000);
 
-  function showBanner(text, isError) {
-    el.banner.textContent = text;
-    el.banner.classList.toggle("banner-error", Boolean(isError));
-    el.banner.hidden = false;
+  // ---- Sign-in ----------------------------------------------------------------
+
+  let chosenPerson = null; // name picked on step 2, or "Admin"
+
+  function showAuthStep(step) {
+    el.app.hidden = true;
+    el.auth.hidden = false;
+    el.authSite.hidden = step !== "site";
+    el.authPeople.hidden = step !== "people";
+    el.authUser.hidden = step !== "user";
+    const focus = step === "site" ? el.sitePassword : step === "user" ? el.userPassword : el.people.querySelector("button");
+    if (focus) setTimeout(() => focus.focus(), 0);
   }
 
-  async function start() {
+  function renderPeople(users) {
+    const person = (name, isAdminChoice, note) => {
+      const b = h("button", "person" + (isAdminChoice ? " person-admin" : ""));
+      b.type = "button";
+      const av = h("span", "avatar avatar-lg");
+      paintAvatar(av, name, isAdminChoice);
+      b.append(av, h("span", "person-name", name));
+      if (note) b.append(h("span", "person-note", note));
+      b.addEventListener("click", () => {
+        chosenPerson = name;
+        paintAvatar(el.authAvatar, name, isAdminChoice);
+        el.authUserTitle.textContent = isAdminChoice ? "Admin sign-in" : "Hi " + name;
+        el.userPassword.value = "";
+        el.userError.textContent = "";
+        showAuthStep("user");
+      });
+      return b;
+    };
+    el.people.replaceChildren(
+      ...users.map((u) => person(u.name, false, u.has_password ? "" : "No password yet")),
+      person("Admin", true, "")
+    );
+  }
+
+  // Show whichever sign-in step this browser is on, or open the dashboard.
+  async function applySession(s) {
+    if (!s.site_ok) {
+      me = null;
+      el.sitePassword.value = "";
+      el.siteError.textContent = "";
+      return showAuthStep("site");
+    }
+    if (!s.user) {
+      me = null;
+      renderPeople(s.users);
+      return showAuthStep("people");
+    }
+    await enterApp(s);
+  }
+
+  async function reloadSession() {
+    try {
+      await applySession(await store.getSession());
+    } catch (e) {
+      showBanner(e.message, true);
+    }
+  }
+
+  async function enterApp(s) {
+    me = s.user;
+    el.auth.hidden = true;
+    el.app.hidden = false;
+    paintAvatar(el.userAvatar, me.name, isAdmin());
+    el.userName.textContent = me.name;
+    el.userRole.hidden = !isAdmin();
+
+    if (isAdmin()) {
+      try {
+        await store.init();
+      } catch (e) {
+        if (!handleAuthError(e)) showToast("Couldn't sync the task list: " + e.message);
+      }
+      try {
+        teamUsers = await store.listUsers();
+      } catch (e) {
+        teamUsers = s.users;
+      }
+      employees = teamUsers.map((u) => u.name);
+    } else {
+      employees = [me.name];
+    }
+    tasks = [];
+    entries = new Map();
+    notes = new Map();
+    noteShownFor = "";
+    active = defaultTab();
     render();
-    try {
-      store = await createStore();
-    } catch (e) {
-      store = createLocalStore();
-      showBanner("Couldn't connect to the shared database, so changes are saved in this browser only. " + e.message, true);
+    if (!subscribed) {
+      store.subscribe(scheduleRefresh);
+      subscribed = true;
     }
-    if (store.mode === "local" && el.banner.hidden) {
-      showBanner("Local mode: changes are saved in this browser only.");
-    }
-    try {
-      await store.init();
-    } catch (e) {
-      showBanner(e.message.startsWith("Can't connect") ? e.message : "Couldn't connect to the database: " + e.message, true);
-      return;
-    }
-    store.subscribe(scheduleRefresh);
     await refresh();
+    if (active === OVERVIEW) loadReport();
+  }
+
+  el.authSite.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    el.siteError.textContent = "";
+    try {
+      await applySession(await store.siteLogin(el.sitePassword.value));
+    } catch (err) {
+      el.siteError.textContent = err.message;
+      el.sitePassword.select();
+    }
+  });
+
+  el.authUser.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    el.userError.textContent = "";
+    try {
+      await applySession(await store.userLogin(chosenPerson, el.userPassword.value));
+    } catch (err) {
+      if (err.code === "site_login") return reloadSession();
+      el.userError.textContent = err.message;
+      el.userPassword.select();
+    }
+  });
+
+  el.authBack.addEventListener("click", () => showAuthStep("people"));
+
+  async function signOut(action) {
+    await flushNote();
+    try {
+      await applySession(await store[action]());
+    } catch (e) {
+      showBanner(e.message, true);
+    }
+  }
+  el.switchUser.addEventListener("click", () => signOut("switchUser"));
+  el.lock.addEventListener("click", () => signOut("logout"));
+  el.authLock.addEventListener("click", () => signOut("logout"));
+
+  async function start() {
+    store = createStore();
+    if (store.mode === "local") {
+      showBanner(
+        "Preview mode: data is saved in this browser only. Dashboard password: " + DEMO.site +
+          " · Admin password: " + DEMO.admin + " · Employee password: " + DEMO.employee
+      );
+    }
+    try {
+      await applySession(await store.getSession());
+    } catch (e) {
+      const plain = e.message.startsWith("Can't") || e.message.includes("config.php");
+      showBanner(plain ? e.message : "Couldn't connect to the database: " + e.message, true);
+    }
   }
 
   start();

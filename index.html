@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
+    <meta name="robots" content="noindex, nofollow" />
     <title>Team SOP Dashboard</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2322c55e'/><path d='M9 16.5l4.5 4.5L23 11.5' stroke='%23fff' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -14,10 +15,54 @@
   <body>
     <div id="banner" class="banner" role="status" hidden></div>
 
-    <main class="container">
+    <!-- Sign-in: 1) dashboard password, 2) pick your name, 3) your password -->
+    <div id="auth" class="auth" hidden>
+      <div class="auth-card">
+        <div class="auth-brand">
+          <span class="auth-logo" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="28" height="28"><rect width="32" height="32" rx="8" fill="#22c55e"/><path d="M9 16.5l4.5 4.5L23 11.5" stroke="#fff" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          Team SOP Dashboard
+        </div>
+
+        <form id="auth-site" class="auth-step" autocomplete="off" hidden>
+          <h1>Enter the dashboard password</h1>
+          <p class="auth-help">Ask your admin if you don&rsquo;t have it.</p>
+          <label class="sr-only" for="site-password">Dashboard password</label>
+          <input id="site-password" type="password" autocomplete="current-password" placeholder="Dashboard password" required />
+          <button type="submit" class="btn-primary btn-block">Continue</button>
+          <p id="site-error" class="auth-error" role="alert"></p>
+        </form>
+
+        <div id="auth-people" class="auth-step" hidden>
+          <h1>Who are you?</h1>
+          <p class="auth-help">Choose your name.</p>
+          <div id="people" class="people-grid"></div>
+          <button type="button" id="auth-lock" class="btn-link">Lock dashboard</button>
+        </div>
+
+        <form id="auth-user" class="auth-step" autocomplete="off" hidden>
+          <button type="button" id="auth-back" class="btn-link btn-back">&#8249; Choose someone else</button>
+          <span id="auth-avatar" class="avatar avatar-lg" aria-hidden="true"></span>
+          <h1 id="auth-user-title"></h1>
+          <label class="sr-only" for="user-password">Your password</label>
+          <input id="user-password" type="password" autocomplete="current-password" placeholder="Your password" required />
+          <button type="submit" class="btn-primary btn-block">Sign in</button>
+          <p id="user-error" class="auth-error" role="alert"></p>
+        </form>
+      </div>
+    </div>
+
+    <main id="app" class="container" hidden>
       <header class="header">
         <div class="header-main">
-          <h1>Team SOP Dashboard</h1>
+          <div class="userbar">
+            <span id="user-avatar" class="avatar" aria-hidden="true"></span>
+            <span class="userbar-name">Signed in as <strong id="user-name"></strong><span id="user-role" class="role-badge" hidden>Admin</span></span>
+            <button type="button" id="switch-user" class="btn-link">Switch user</button>
+            <button type="button" id="lock" class="btn-link">Lock</button>
+          </div>
+          <h1 id="page-title">Team SOP Dashboard</h1>
           <p class="subtitle">Daily tasks and standard procedures. Press Start and End as you work; times are recorded automatically and can&rsquo;t be changed.</p>
           <ul class="legend" aria-label="Status legend">
             <li><span class="dot status-todo"></span>To Do: no start time</li>
@@ -48,36 +93,125 @@
         </div>
       </header>
 
-      <nav id="tabs" class="tabs" role="tablist" aria-label="Employees"></nav>
+      <nav id="tabs" class="tabs" role="tablist" aria-label="Sections"></nav>
 
-      <section class="panel">
+      <!-- Admin: overview of everyone, assigning tasks, reports -->
+      <div id="overview" class="admin-view" hidden>
+        <section class="panel">
+          <div class="section-head">
+            <h2>Team on <span id="ov-date"></span></h2>
+            <div id="ov-totals" class="ov-totals"></div>
+          </div>
+          <div id="ov-cards" class="ov-cards"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head"><h2>Assign a new task</h2></div>
+          <form id="assign-form" class="assign-form" autocomplete="off">
+            <label class="field field-grow">
+              <span>Task</span>
+              <input id="assign-title" type="text" maxlength="200" placeholder="e.g. SEO - New Client" required />
+            </label>
+            <label class="field">
+              <span>Assign to</span>
+              <select id="assign-to" required></select>
+            </label>
+            <button type="submit" class="btn-primary">Assign task</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h2>Reports</h2>
+            <button type="button" id="rep-csv" class="btn-secondary">Download CSV</button>
+          </div>
+          <div class="report-controls">
+            <label class="field">
+              <span>Period</span>
+              <select id="rep-preset">
+                <option value="today">Today</option>
+                <option value="yesterday">Yesterday</option>
+                <option value="week" selected>This week</option>
+                <option value="last7">Last 7 days</option>
+                <option value="month">This month</option>
+                <option value="lastmonth">Last month</option>
+                <option value="custom">Custom dates</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>From</span>
+              <input id="rep-from" type="date" />
+            </label>
+            <label class="field">
+              <span>To</span>
+              <input id="rep-to" type="date" />
+            </label>
+          </div>
+          <div class="table-scroll">
+            <table class="report-table">
+              <thead id="rep-head"></thead>
+              <tbody id="rep-body"></tbody>
+              <tfoot id="rep-foot"></tfoot>
+            </table>
+          </div>
+          <p id="rep-empty" class="empty" hidden>No work recorded in this period.</p>
+        </section>
+      </div>
+
+      <!-- Admin: team members and passwords -->
+      <div id="team" class="admin-view" hidden>
+        <section class="panel">
+          <div class="section-head"><h2>Team members</h2></div>
+          <p class="section-help">Everyone signs in with the dashboard password, then their own password. Setting a new password signs that person out.</p>
+          <div id="team-list" class="team-list"></div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><h2>Add a team member</h2></div>
+          <form id="add-user-form" class="assign-form" autocomplete="off">
+            <label class="field field-grow">
+              <span>Name</span>
+              <input id="new-user-name" type="text" maxlength="100" placeholder="e.g. Ravi" required />
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <input id="new-user-password" type="text" maxlength="100" minlength="4" placeholder="At least 4 characters" autocomplete="new-password" required />
+            </label>
+            <button type="submit" class="btn-primary">Add member</button>
+          </form>
+        </section>
+      </div>
+
+      <!-- One person's tasks -->
+      <section id="tasks-panel" class="panel">
         <div id="spotlight" class="spotlight" aria-live="polite" hidden></div>
         <div id="summary" class="summary"></div>
 
-        <table class="tasks">
-          <thead>
-            <tr>
-              <th class="num">#</th>
-              <th>Task</th>
-              <th>Start Time</th>
-              <th>End Time</th>
-              <th>Status</th>
-              <th id="qty-head" hidden>Videos Done</th>
-              <th>Time Taken</th>
-              <th class="actions"><span class="sr-only">Actions</span></th>
-            </tr>
-          </thead>
-          <tbody id="task-rows"></tbody>
-        </table>
-        <p id="empty" class="empty" hidden>No tasks yet. Add one below.</p>
+        <div class="table-scroll table-scroll-tasks">
+          <table class="tasks">
+            <thead>
+              <tr>
+                <th class="num">#</th>
+                <th>Task</th>
+                <th>Start Time</th>
+                <th>End Time</th>
+                <th>Status</th>
+                <th id="qty-head" hidden>Videos Done</th>
+                <th>Time Taken</th>
+                <th class="actions"><span class="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="task-rows"></tbody>
+          </table>
+        </div>
+        <p id="empty" class="empty" hidden>No tasks yet.</p>
 
-        <form id="add-form" class="add-form" autocomplete="off">
-          <input id="add-input" type="text" maxlength="120" placeholder="Add a task…" aria-label="New task title" />
+        <form id="add-form" class="add-form" autocomplete="off" hidden>
+          <input id="add-input" type="text" maxlength="200" placeholder="Add a task…" aria-label="New task title" />
           <button type="submit" class="btn-primary">Add Task</button>
         </form>
       </section>
 
-      <section class="panel notes-panel" aria-labelledby="notes-title">
+      <section id="notes-panel" class="panel notes-panel" aria-labelledby="notes-title">
         <div class="notes-head">
           <h2 id="notes-title">Notes</h2>
           <span id="notes-status" class="notes-status" aria-live="polite"></span>
