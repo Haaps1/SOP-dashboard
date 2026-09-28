@@ -742,9 +742,8 @@ switch ($action) {
         respond(200, ['data' => $q->fetchAll()]);
 
     case 'insertTask':
-        // Creating and assigning tasks is the admin's job.
-        require_admin($isAdmin);
-        $employee = str_param($input, 'employee', 100);
+        // The admin can create a task for anyone; employees only for themselves.
+        $employee = $isAdmin ? str_param($input, 'employee', 100) : $me;
         if (!employee_exists($db, $employee)) {
             fail('Choose someone on the team to assign this task to.');
         }
@@ -814,8 +813,9 @@ switch ($action) {
         respond(200, ['data' => ['id' => $newId]]);
 
     case 'removeTask':
-        require_admin($isAdmin);
-        $db->prepare('DELETE FROM tasks WHERE id = ?')->execute([id_param($input, 'id')]);
+        // The admin can delete any task; employees only their own.
+        $t = require_own_task($db, $isAdmin, $me, id_param($input, 'id'));
+        $db->prepare('DELETE FROM tasks WHERE id = ?')->execute([$t['id']]);
         respond(200, ['data' => true]);
 
     case 'setPositions':

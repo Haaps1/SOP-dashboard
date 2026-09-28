@@ -245,7 +245,8 @@
   //   init()                          -> admin: apply seed version
   //   listTasks(), listEntries(dates), listEntriesRange(from, to), listNotes(date)
   //   listWorkDates(employee, from, to)
-  //   insertTask({employee, title, frequency, due_day}), updateTask(id, changes), removeTask(id)   (admin)
+  //   insertTask({employee, title, frequency, due_day}), removeTask(id)    (employees: their own)
+  //   updateTask(id, changes)                                              (admin)
   //   duplicateTask(id), setPositions([{id, position}])
   //   saveEntry(taskId, date, {start_time, end_time, quantity}) -> recorded times
   //   skipEntry(taskId, date, skipped)                                                            (admin)
@@ -484,7 +485,8 @@
         return entriesWhere((d) => d >= from && d <= to);
       },
       async insertTask(row) {
-        requireAdmin();
+        requireUser();
+        if (!isAdmin()) row = { ...row, employee: me().name };
         if (!activeUsers().some((u) => u.name === row.employee)) throw apiError("Choose someone on the team to assign this task to.");
         const mine = state.tasks.filter((t) => t.employee === row.employee);
         const position = mine.length ? Math.max(...mine.map((t) => t.position)) + 1 : 0;
@@ -522,7 +524,7 @@
         save();
       },
       async removeTask(id) {
-        requireAdmin();
+        ownTask(id);
         state.tasks = state.tasks.filter((t) => t.id !== id);
         for (const date of Object.keys(state.entries)) delete state.entries[date][id];
         save();
@@ -1314,15 +1316,16 @@
         editingTaskId = editingTaskId === task.id ? null : task.id;
         render();
       });
-      const del = iconButton("trash", "Delete " + task.title, "btn-tool btn-delete", () => {
-        // Two-step delete: first click arms the button, second click deletes.
-        if (del.classList.contains("armed")) return deleteTask(task);
-        del.classList.add("armed");
-        del.textContent = "Delete?";
-        setTimeout(() => render(), 3000);
-      });
-      tools.append(edit, del);
+      tools.append(edit);
     }
+    const del = iconButton("trash", "Delete " + task.title, "btn-tool btn-delete", () => {
+      // Two-step delete: first click arms the button, second click deletes.
+      if (del.classList.contains("armed")) return deleteTask(task);
+      del.classList.add("armed");
+      del.textContent = "Delete?";
+      setTimeout(() => render(), 3000);
+    });
+    tools.append(del);
     return tools;
   }
 
@@ -1364,7 +1367,7 @@
     el.rows.replaceChildren(...rows);
     el.empty.hidden = list.length > 0;
     const kind = view === "daily" ? "daily" : view === "weekly" ? "weekly" : "monthly";
-    el.empty.textContent = isAdmin() ? "No " + kind + " tasks yet. Add one below." : "No " + kind + " tasks assigned to you.";
+    el.empty.textContent = "No " + kind + " tasks yet. Add one below.";
   }
 
   // ---- Pending view ------------------------------------------------------------
@@ -1908,13 +1911,13 @@
     el.qtyHead.hidden = !countsItems();
     if (countsItems()) el.qtyHead.textContent = capitalize(DONE_COUNTERS[active]) + " Done";
     renderRows(list);
-    el.addForm.hidden = !isAdmin();
+    el.addForm.hidden = false;
     el.addDue.hidden = view === "daily";
     if (view !== "daily" && el.addDue.dataset.freq !== view) {
       dueOptions(el.addDue, view, 1);
       el.addDue.dataset.freq = view;
     }
-    el.addInput.placeholder = "Add a " + view + " task for " + active + "…";
+    el.addInput.placeholder = isAdmin() ? "Add a " + view + " task for " + active + "…" : "Add a " + view + " task…";
   }
 
   el.rows.addEventListener("focusout", () => {

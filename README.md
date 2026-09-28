@@ -16,7 +16,7 @@ A daily task tracker for the team that also serves as the SOP. It is plain HTML,
 - You can add, duplicate, reorder (up and down arrows) or delete tasks for each employee. A copy is placed directly below the original and named "Title (2)", "Title (3)" and so on.
 - Any task that is in progress on the selected day is shown in a large card at the top of the list, with its start time and how long it has been running.
 - **Sign-in:** a dashboard password first, then people pick their name and enter their own password. Admin signs in the same way by choosing **Admin**.
-- **Employees see only their own work:** their tasks, times, video counts and notes. The server enforces this, so it can't be bypassed from the browser. Employees can start and end tasks, count videos, write notes, reorder and duplicate their own tasks. Only the admin can create, assign or delete tasks.
+- **Employees see only their own work:** their tasks, times, video counts and notes. The server enforces this, so it can't be bypassed from the browser. Employees can start and end tasks, count videos, write notes, and add, delete, reorder and duplicate their own tasks in their Daily, Weekly and Monthly lists. Only the admin can assign tasks to other people, or edit and reassign tasks.
 - **Admin:**
   - An **Overview** of everyone for the selected day: progress, what each person is working on now, time and videos.
   - **Assign a new task** to anyone.
@@ -45,6 +45,7 @@ A daily task tracker for the team that also serves as the SOP. It is plain HTML,
 | `config.js` | Which backend to use (`php` or `local`) |
 | `api/index.php` | PHP + MySQL API. It creates its own tables on first use. |
 | `api/config.sample.php` | Template for `api/config.php`, which holds the database login and the dashboard/admin passwords. That file is not in git. |
+| `favicon.ico`, `icons/` | HAAPS logo as the browser-tab and home-screen icon |
 | `.htaccess` | Forces HTTPS, makes updates show immediately, and hides private files |
 
 ## Setup on Hostinger (PHP + MySQL)
