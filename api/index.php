@@ -14,6 +14,12 @@
 //      team and run reports.
 // The site and admin passwords live in api/config.php. Employee passwords are
 // set by the admin and stored hashed in the database.
+//
+// There are two entrances, each with its own sign-in cookie:
+//   - the team site (haaps.co.in): dashboard password, then pick your name
+//     and enter your password. Admin can't sign in here.
+//   - the admin site (admin.haaps.co.in or /admin): admin password only.
+//     admin/api/index.php defines SOP_ADMIN_ENTRY and includes this file.
 
 declare(strict_types=1);
 
@@ -23,7 +29,8 @@ header('X-Content-Type-Options: nosniff');
 
 const SCHEMA_VERSION = 3;
 const FREQUENCIES = ['daily', 'weekly', 'monthly'];
-const SESSION_COOKIE = 'sop_session';
+define('ADMIN_ENTRY', defined('SOP_ADMIN_ENTRY') && SOP_ADMIN_ENTRY);
+define('SESSION_COOKIE', ADMIN_ENTRY ? 'sop_admin_session' : 'sop_session');
 const SESSION_DAYS = 30;
 const MAX_FAILED_LOGINS = 20;   // per IP address (an office often shares one) ...
 const FAILED_LOGIN_WINDOW = 15; // ... in this many minutes
@@ -437,13 +444,13 @@ function session_payload(PDO $db, ?array $s): array
 {
     $siteOk = $s && (int) $s['site_ok'] === 1;
     $user = null;
-    if ($siteOk && $s['role'] === 'admin') {
+    if ($siteOk && $s['role'] === 'admin' && ADMIN_ENTRY) {
         $user = ['role' => 'admin', 'name' => ADMIN_NAME];
-    } elseif ($siteOk && $s['role'] === 'employee' && $s['user_name'] !== null) {
+    } elseif ($siteOk && $s['role'] === 'employee' && $s['user_name'] !== null && !ADMIN_ENTRY) {
         $user = ['role' => 'employee', 'name' => $s['user_name']];
     }
     $users = [];
-    if ($siteOk) {
+    if ($siteOk && !ADMIN_ENTRY) {
         ensure_users($db);
         $users = user_list($db);
     }
@@ -451,6 +458,7 @@ function session_payload(PDO $db, ?array $s): array
         'site_ok' => $siteOk,
         'user' => $user,
         'users' => $users,
+        'entry' => ADMIN_ENTRY ? 'admin' : 'team',
         'today' => date('Y-m-d'),
         'tracking_start' => $user ? (meta($db, 'tracking_start') ?? date('Y-m-d')) : null,
     ];
@@ -559,7 +567,28 @@ switch ($action) {
         }
         respond(200, ['data' => session_payload($db, $session)]);
 
+    case 'adminLogin':
+        // The admin site asks for the admin password only.
+        if (!ADMIN_ENTRY) {
+            fail('Sign in as admin from the admin address.', 403);
+        }
+        check_rate_limit($db);
+        if (!config_password_matches(password_param($input), $config['admin_password'])) {
+            record_failed_login($db);
+            fail('Wrong password.', 401, 'wrong_password');
+        }
+        if ($session) {
+            $db->prepare('DELETE FROM sessions WHERE token_hash = ?')->execute([$session['token_hash']]);
+        }
+        $session = create_session($db);
+        $db->prepare("UPDATE sessions SET role = 'admin' WHERE token_hash = ?")->execute([$session['token_hash']]);
+        $session = load_session_by_hash($db, $session['token_hash']);
+        respond(200, ['data' => session_payload($db, $session)]);
+
     case 'userLogin':
+        if (ADMIN_ENTRY) {
+            fail('Please sign in.', 401, 'admin_login');
+        }
         if (!$session || (int) $session['site_ok'] !== 1) {
             fail('Enter the dashboard password first.', 401, 'site_login');
         }
@@ -567,12 +596,7 @@ switch ($action) {
         $name = str_param($input, 'name', 100);
         $password = password_param($input);
         if (strcasecmp($name, ADMIN_NAME) === 0) {
-            if (!config_password_matches($password, $config['admin_password'])) {
-                record_failed_login($db);
-                fail('Wrong password.', 401, 'wrong_password');
-            }
-            $role = 'admin';
-            $userId = null;
+            fail('Admin signs in from the admin address.', 403);
         } else {
             $q = $db->prepare('SELECT id, password_hash FROM users WHERE name = ? AND active = 1');
             $q->execute([$name]);
@@ -618,10 +642,13 @@ switch ($action) {
 // Everything below needs a signed-in person.
 // ---------------------------------------------------------------------------
 
+if (ADMIN_ENTRY && (!$session || $session['role'] !== 'admin')) {
+    fail('Please sign in.', 401, 'admin_login');
+}
 if (!$session || (int) $session['site_ok'] !== 1) {
     fail('Please sign in.', 401, 'site_login');
 }
-if ($session['role'] === 'admin') {
+if ($session['role'] === 'admin' && ADMIN_ENTRY) {
     $isAdmin = true;
     $me = null;
 } elseif ($session['role'] === 'employee' && $session['user_name'] !== null) {

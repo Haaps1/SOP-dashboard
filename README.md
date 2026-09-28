@@ -15,7 +15,9 @@ A daily task tracker for the team that also serves as the SOP. It is plain HTML,
   - End time set: **Done** (green)
 - You can add, duplicate, reorder (up and down arrows) or delete tasks for each employee. A copy is placed directly below the original and named "Title (2)", "Title (3)" and so on.
 - Any task that is in progress on the selected day is shown in a large card at the top of the list, with its start time and how long it has been running.
-- **Sign-in:** a dashboard password first, then people pick their name and enter their own password. Admin signs in the same way by choosing **Admin**.
+- **Sign-in on the team site (haaps.co.in):** a dashboard password first, then people pick their name and enter their own password. Admin isn't listed there.
+- **Admin site (admin.haaps.co.in, or haaps.co.in/admin):** asks for the admin password only. It has its own sign-in, separate from the team site.
+- **Header:** a greeting, a live clock, and a progress ring for today's daily tasks (your own, or the whole team's for the admin), with the pending count.
 - **Employees see only their own work:** their tasks, times, video counts and notes. The server enforces this, so it can't be bypassed from the browser. Employees can start and end tasks, count videos, write notes, and add, delete, reorder and duplicate their own tasks in their Daily, Weekly and Monthly lists. Only the admin can assign tasks to other people, or edit and reassign tasks.
 - **Admin:**
   - An **Overview** of everyone for the selected day: progress, what each person is working on now, time and videos.
@@ -46,6 +48,8 @@ A daily task tracker for the team that also serves as the SOP. It is plain HTML,
 | `api/index.php` | PHP + MySQL API. It creates its own tables on first use. |
 | `api/config.sample.php` | Template for `api/config.php`, which holds the database login and the dashboard/admin passwords. That file is not in git. |
 | `favicon.ico`, `icons/` | HAAPS logo as the browser-tab and home-screen icon |
+| `admin/` | The admin site: `admin/config.js` (admin mode) and `admin/api/index.php`, which reuses `api/` with admin-only sign-in. `build.sh` copies the rest of the page into `dist/admin/`. |
+| `build.sh` | Builds `dist/`, the folder to upload to `public_html`. It never includes `api/config.php`. |
 | `.htaccess` | Forces HTTPS, makes updates show immediately, and hides private files |
 
 ## Setup on Hostinger (PHP + MySQL)
@@ -79,6 +83,16 @@ You don't need phpMyAdmin. The dashboard creates its tables itself the first tim
 ### 4. Turn on SSL and open the site
 
 In hPanel, open **Security → SSL** and make sure the domain or subdomain has an active certificate. Then open the address. If something is wrong with the database settings, a red bar at the top says what to fix.
+
+### The admin site
+
+Run `./build.sh` and upload the contents of `dist/`. That includes an `admin` folder, so **haaps.co.in/admin** works straight away.
+
+For **admin.haaps.co.in**:
+1. In hPanel, go to **Domains → Subdomains** and create the subdomain `admin`. If hPanel asks for a folder, use `public_html/admin`, the folder from the upload.
+2. Turn on SSL for the subdomain under **Security → SSL**.
+
+Both addresses use the same database and the same `api/config.php`, and they ask for `admin_password` only.
 
 ### Updating the site later
 

@@ -9,6 +9,10 @@
   // Pending work older than this many days drops off the list.
   const PENDING_DAYS = 30;
   const config = window.SOP_CONFIG || {};
+  // "team" (haaps.co.in): dashboard password, then name + own password.
+  // "admin" (admin.haaps.co.in or /admin): admin password only. The local
+  // preview opens the admin side with #admin in the address.
+  const MODE = config.mode === "admin" || (config.backend !== "php" && location.hash === "#admin") ? "admin" : "team";
 
   // Flatten SEED_TASKS into rows: { employee, title, position }.
   function seedRows() {
@@ -294,6 +298,7 @@
       getSession: () => call("session"),
       siteLogin: (password) => call("siteLogin", { password }),
       userLogin: (name, password) => call("userLogin", { name, password }),
+      adminLogin: (password) => call("adminLogin", { password }),
       switchUser: () => call("switchUser"),
       logout: () => call("logout"),
       init: () => call("init", { version: SEED_VERSION, tasks: seedRows(), employees: window.EMPLOYEES }),
@@ -384,16 +389,21 @@
     }
     seed();
 
-    const me = () => state.session || {};
+    // One sign-in per entrance, like the two cookies on the server.
+    const sessionKey = "session_" + MODE;
+    const me = () => state[sessionKey] || {};
+    const setSession = (v) => (state[sessionKey] = v);
     const isAdmin = () => me().role === "admin";
     const activeUsers = () => state.users.filter((u) => u.active).sort((a, b) => a.position - b.position);
     const publicUsers = () => activeUsers().map((u) => ({ name: u.name, has_password: Boolean(u.password), active: true }));
     function payload() {
       const s = me();
-      const user = s.site_ok && s.role ? { role: s.role, name: s.role === "admin" ? "Admin" : s.name } : null;
-      return { site_ok: Boolean(s.site_ok), user, users: s.site_ok ? publicUsers() : [], today: today(), tracking_start: user ? state.trackingStart : null };
+      const ok = s.site_ok && ((MODE === "admin" && s.role === "admin") || (MODE === "team" && s.role === "employee"));
+      const user = ok ? { role: s.role, name: s.role === "admin" ? "Admin" : s.name } : null;
+      return { site_ok: Boolean(s.site_ok), user, users: s.site_ok && MODE === "team" ? publicUsers() : [], entry: MODE, today: today(), tracking_start: user ? state.trackingStart : null };
     }
     function requireUser() {
+      if (MODE === "admin" && me().role !== "admin") throw apiError("Please sign in.", "admin_login");
       if (!me().site_ok) throw apiError("Please sign in.", "site_login");
       if (!me().role) throw apiError("Please choose who you are.", "user_login");
     }
@@ -440,32 +450,37 @@
       },
       async siteLogin(password) {
         if (password !== DEMO.site) throw apiError("Wrong password.", "wrong_password");
-        state.session = { site_ok: true };
+        setSession({ site_ok: true });
         save();
         return payload();
       },
       async userLogin(name, password) {
         if (!me().site_ok) throw apiError("Enter the dashboard password first.", "site_login");
         if (name.toLowerCase() === "admin") {
-          if (password !== DEMO.admin) throw apiError("Wrong password.", "wrong_password");
-          state.session = { site_ok: true, role: "admin" };
+          throw apiError("Admin signs in from the admin address.");
         } else {
           const u = activeUsers().find((x) => x.name === name);
           if (!u) throw apiError("That person is no longer on the team.");
           if (!u.password) throw apiError("No password has been set for " + name + " yet. Ask the admin to set one.");
           if (password !== u.password) throw apiError("Wrong password.", "wrong_password");
-          state.session = { site_ok: true, role: "employee", name };
+          setSession({ site_ok: true, role: "employee", name });
         }
         save();
         return payload();
       },
+      async adminLogin(password) {
+        if (password !== DEMO.admin) throw apiError("Wrong password.", "wrong_password");
+        setSession({ site_ok: true, role: "admin" });
+        save();
+        return payload();
+      },
       async switchUser() {
-        state.session = { site_ok: Boolean(me().site_ok) };
+        setSession({ site_ok: Boolean(me().site_ok) });
         save();
         return payload();
       },
       async logout() {
-        state.session = {};
+        setSession({});
         save();
         return payload();
       },
@@ -683,6 +698,15 @@
     authSite: $("auth-site"),
     authPeople: $("auth-people"),
     authUser: $("auth-user"),
+    authAdmin: $("auth-admin"),
+    adminPassword: $("admin-password"),
+    adminError: $("admin-error"),
+    greeting: $("greeting"),
+    ringFill: $("ring-fill"),
+    ringPct: $("ring-pct"),
+    progressMain: $("progress-main"),
+    progressSub: $("progress-sub"),
+    clock: $("clock"),
     sitePassword: $("site-password"),
     siteError: $("site-error"),
     people: $("people"),
@@ -868,7 +892,7 @@
   // The server says this browser is no longer signed in (e.g. the admin
   // changed someone's password): go back to the sign-in screen.
   function handleAuthError(e) {
-    if (e && (e.code === "site_login" || e.code === "user_login")) {
+    if (e && (e.code === "site_login" || e.code === "user_login" || e.code === "admin_login")) {
       reloadSession();
       return true;
     }
@@ -1000,6 +1024,40 @@
     }
     el.dateNote.classList.toggle("is-other-day", !isToday());
   }
+
+  function greetingText() {
+    const hour = new Date().getHours();
+    const part = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+    return part + ", " + me.name;
+  }
+
+  // Header: greeting and a progress ring for the selected day's daily tasks
+  // (your own, or the whole team's for the admin).
+  function renderHeaderWidget() {
+    el.greeting.textContent = greetingText();
+    const people = isAdmin() ? employees : [me.name];
+    const list = people.flatMap((name) => tasksFor(name, "daily"));
+    const done = countStatuses(list).done;
+    const pct = list.length ? Math.round((done / list.length) * 100) : 0;
+    const circumference = 2 * Math.PI * 27;
+    el.ringFill.style.strokeDasharray = circumference.toFixed(2);
+    el.ringFill.style.strokeDashoffset = (circumference * (1 - pct / 100)).toFixed(2);
+    el.ringPct.textContent = pct + "%";
+    const when = isToday() ? "today" : "on " + dayDate(selectedDate);
+    el.progressMain.textContent = done + " of " + list.length + " daily tasks done " + (isAdmin() ? "by the team " : "") + when;
+    const pending = people.reduce((n, name) => n + pendingFor(name).length, 0);
+    const due = people.reduce((n, name) => n + dueReminders(name).length, 0);
+    const bits = [];
+    bits.push(pending ? pending + " pending" + (isAdmin() ? " across the team" : "") : "Nothing pending");
+    if (due) bits.push(due + (due === 1 ? " reminder" : " reminders") + " due");
+    el.progressSub.textContent = bits.join(" · ");
+    el.progressSub.classList.toggle("has-pending", pending > 0);
+  }
+
+  function renderClock() {
+    el.clock.textContent = formatClock(nowHHMM());
+  }
+  setInterval(renderClock, 10 * 1000);
 
   function renderDoneCounter(list) {
     const noun = isPersonTab() && view === "daily" && DONE_COUNTERS[active];
@@ -1882,6 +1940,7 @@
       return;
     }
     renderPending = false;
+    renderHeaderWidget();
     renderTabs();
     renderSubtabs();
 
@@ -2236,7 +2295,9 @@
     el.authSite.hidden = step !== "site";
     el.authPeople.hidden = step !== "people";
     el.authUser.hidden = step !== "user";
-    const focus = step === "site" ? el.sitePassword : step === "user" ? el.userPassword : el.people.querySelector("button");
+    el.authAdmin.hidden = step !== "admin";
+    const focus =
+      step === "site" ? el.sitePassword : step === "user" ? el.userPassword : step === "admin" ? el.adminPassword : el.people.querySelector("button");
     if (focus) setTimeout(() => focus.focus(), 0);
   }
 
@@ -2258,16 +2319,23 @@
       });
       return b;
     };
-    el.people.replaceChildren(
-      ...users.map((u) => person(u.name, false, u.has_password ? "" : "No password yet")),
-      person("Admin", true, "")
-    );
+    // Admin isn't listed here: the admin signs in at the admin address.
+    el.people.replaceChildren(...users.map((u) => person(u.name, false, u.has_password ? "" : "No password yet")));
   }
 
   // Show whichever sign-in step this browser is on, or open the dashboard.
   async function applySession(s) {
     // Never run ahead of the server's date (it refuses times for future days).
     if (s.today) todayStr = s.today < ymd(new Date()) ? s.today : ymd(new Date());
+    if (MODE === "admin") {
+      if (!s.user) {
+        me = null;
+        el.adminPassword.value = "";
+        el.adminError.textContent = "";
+        return showAuthStep("admin");
+      }
+      return enterApp(s);
+    }
     if (!s.site_ok) {
       me = null;
       el.sitePassword.value = "";
@@ -2298,6 +2366,7 @@
     paintAvatar(el.userAvatar, me.name, isAdmin());
     el.userName.textContent = me.name;
     el.userRole.hidden = !isAdmin();
+    el.switchUser.hidden = isAdmin(); // the admin site has only one sign-in
 
     if (isAdmin()) {
       try {
@@ -2355,6 +2424,17 @@
     }
   });
 
+  el.authAdmin.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    el.adminError.textContent = "";
+    try {
+      await applySession(await store.adminLogin(el.adminPassword.value));
+    } catch (err) {
+      el.adminError.textContent = err.message;
+      el.adminPassword.select();
+    }
+  });
+
   el.authBack.addEventListener("click", () => showAuthStep("people"));
 
   async function signOut(action) {
@@ -2369,13 +2449,20 @@
   el.lock.addEventListener("click", () => signOut("logout"));
   el.authLock.addEventListener("click", () => signOut("logout"));
 
+  // Preview only: switching between the team and admin side (#admin) reloads.
+  if (config.backend !== "php") window.addEventListener("hashchange", () => location.reload());
+
   async function start() {
     store = createStore();
     syncAssignDue();
+    renderClock();
+    if (MODE === "admin") document.title = "Admin · Team SOP Dashboard";
     if (store.mode === "local") {
       showBanner(
-        "Preview mode: data is saved in this browser only. Dashboard password: " + DEMO.site +
-          " · Admin password: " + DEMO.admin + " · Employee password: " + DEMO.employee
+        MODE === "admin"
+          ? "Preview of the admin site: data is saved in this browser only. Admin password: " + DEMO.admin
+          : "Preview mode: data is saved in this browser only. Dashboard password: " + DEMO.site +
+              " · Employee password: " + DEMO.employee + " · Admin preview: add #admin to the address"
       );
     }
     try {

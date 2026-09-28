@@ -44,6 +44,16 @@
           <button type="button" id="auth-lock" class="btn-link">Lock dashboard</button>
         </div>
 
+        <form id="auth-admin" class="auth-step" autocomplete="off" hidden>
+          <span class="avatar avatar-lg avatar-admin" aria-hidden="true">&#9733;</span>
+          <h1>Admin sign-in</h1>
+          <p class="auth-help">This is the admin area. Team members sign in at the main address.</p>
+          <label class="sr-only" for="admin-password">Admin password</label>
+          <input id="admin-password" type="password" autocomplete="current-password" placeholder="Admin password" required />
+          <button type="submit" class="btn-primary btn-block">Sign in</button>
+          <p id="admin-error" class="auth-error" role="alert"></p>
+        </form>
+
         <form id="auth-user" class="auth-step" autocomplete="off" hidden>
           <button type="button" id="auth-back" class="btn-link btn-back">&#8249; Choose someone else</button>
           <span id="auth-avatar" class="avatar avatar-lg" aria-hidden="true"></span>
@@ -65,13 +75,27 @@
             <button type="button" id="switch-user" class="btn-link">Switch user</button>
             <button type="button" id="lock" class="btn-link">Lock</button>
           </div>
+          <p id="greeting" class="greeting"></p>
           <h1 id="page-title">Team SOP Dashboard</h1>
-          <p class="subtitle">Daily tasks and standard procedures. Press Start and End as you work; times are recorded automatically and can&rsquo;t be changed.</p>
-          <ul class="legend" aria-label="Status legend">
-            <li><span class="dot status-todo"></span>To Do: no start time</li>
-            <li><span class="dot status-in_progress"></span>In Progress: started, not ended</li>
-            <li><span class="dot status-done"></span>Done: end time set</li>
-          </ul>
+          <div id="progress-widget" class="progress-widget">
+            <span class="ring-wrap">
+              <svg class="ring" viewBox="0 0 64 64" aria-hidden="true">
+                <defs>
+                  <linearGradient id="ring-grad" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stop-color="#ff1f7a" />
+                    <stop offset="1" stop-color="#a10fb0" />
+                  </linearGradient>
+                </defs>
+                <circle class="ring-track" cx="32" cy="32" r="27" />
+                <circle id="ring-fill" class="ring-fill" cx="32" cy="32" r="27" />
+              </svg>
+              <span id="ring-pct" class="ring-pct">0%</span>
+            </span>
+            <span class="progress-text">
+              <strong id="progress-main"></strong>
+              <span id="progress-sub"></span>
+            </span>
+          </div>
         </div>
         <div class="date-panel">
           <span id="date-note" class="date-note"></span>
@@ -82,6 +106,7 @@
               <span id="today-month" class="today-month"></span>
             </span>
           </time>
+          <span id="clock" class="clock" aria-label="Current time"></span>
           <div class="date-controls">
             <button type="button" id="date-prev" class="btn-step" aria-label="Previous day">&#8249;</button>
             <button type="button" id="date-button" class="btn-calendar" aria-haspopup="dialog" aria-expanded="false" aria-controls="calendar">
