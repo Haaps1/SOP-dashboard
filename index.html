@@ -106,11 +106,37 @@
         </section>
 
         <section class="panel">
+          <div class="section-head">
+            <h2>Pending work</h2>
+            <span id="ov-pending-total" class="ov-total status-todo"></span>
+          </div>
+          <p class="section-help">Daily tasks not finished on their day, and weekly or monthly tasks not finished by their due day. They stay here until they&rsquo;re done or you excuse them.</p>
+          <div id="ov-pending" class="ov-pending"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head"><h2>Employee notes · <span id="ov-notes-date"></span></h2></div>
+          <div id="ov-notes" class="ov-notes"></div>
+        </section>
+
+        <section class="panel">
           <div class="section-head"><h2>Assign a new task</h2></div>
           <form id="assign-form" class="assign-form" autocomplete="off">
             <label class="field field-grow">
               <span>Task</span>
               <input id="assign-title" type="text" maxlength="200" placeholder="e.g. SEO - New Client" required />
+            </label>
+            <label class="field">
+              <span>Type</span>
+              <select id="assign-freq">
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </label>
+            <label class="field" id="assign-due-field" hidden>
+              <span id="assign-due-label">Due on</span>
+              <select id="assign-due"></select>
             </label>
             <label class="field">
               <span>Assign to</span>
@@ -182,7 +208,10 @@
       </div>
 
       <!-- One person's tasks -->
+      <nav id="subtabs" class="subtabs" role="tablist" aria-label="Task lists"></nav>
+
       <section id="tasks-panel" class="panel">
+        <p id="period-line" class="period-line" hidden></p>
         <div id="spotlight" class="spotlight" aria-live="polite" hidden></div>
         <div id="summary" class="summary"></div>
 
@@ -207,8 +236,52 @@
 
         <form id="add-form" class="add-form" autocomplete="off" hidden>
           <input id="add-input" type="text" maxlength="200" placeholder="Add a task…" aria-label="New task title" />
+          <select id="add-due" aria-label="Due on" hidden></select>
           <button type="submit" class="btn-primary">Add Task</button>
         </form>
+      </section>
+
+      <section id="pending-panel" class="panel" hidden>
+        <div class="section-head">
+          <h2>Pending work</h2>
+        </div>
+        <p class="section-help" id="pending-help"></p>
+        <div class="table-scroll">
+          <table class="tasks pending-table">
+            <thead>
+              <tr>
+                <th>Task</th>
+                <th>Was due</th>
+                <th>Late by</th>
+                <th>Start Time</th>
+                <th>End Time</th>
+                <th>Status</th>
+                <th class="actions"><span class="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="pending-rows"></tbody>
+          </table>
+        </div>
+        <p id="pending-empty" class="empty empty-good" hidden>All caught up. Nothing is pending.</p>
+      </section>
+
+      <section id="reminders-panel" class="panel" hidden>
+        <form id="reminder-form" class="assign-form reminder-form" autocomplete="off">
+          <label class="field field-grow">
+            <span>Reminder</span>
+            <input id="reminder-title" type="text" maxlength="300" placeholder="e.g. Renew Medfine domain" required />
+          </label>
+          <label class="field">
+            <span>Date</span>
+            <input id="reminder-date" type="date" required />
+          </label>
+          <label class="field">
+            <span>Time (optional)</span>
+            <input id="reminder-time" type="time" />
+          </label>
+          <button type="submit" class="btn-primary">Add reminder</button>
+        </form>
+        <div id="reminder-groups" class="reminder-groups"></div>
       </section>
 
       <section id="notes-panel" class="panel notes-panel" aria-labelledby="notes-title">

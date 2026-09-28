@@ -23,6 +23,15 @@ A daily task tracker for the team that also serves as the SOP. It is plain HTML,
   - **Reports** for today, this week, last 7 days, this month, last month or custom dates, with a CSV download.
   - A **Team** page to add or remove people and set their passwords.
   - A tab per employee with full control.
+- **Each person has five sections:** Daily Tasks, Weekly Tasks, Monthly Tasks, Pending and Reminders.
+  - **Daily** tasks happen every work day. The work days are set in `WORK_DAYS` in `tasks-seed.js` and default to Monday to Saturday.
+  - **Weekly** tasks happen once a week and are due on a weekday, e.g. Monday.
+  - **Monthly** tasks happen once a month and are due on a date, e.g. the 5th.
+  - **Pending** lists daily tasks that weren't finished on their day, and weekly or monthly tasks not finished by their due day. An item stays there until it's finished (Start and End work straight from the Pending list, and the real day is recorded) or the admin **excuses** it, e.g. for a day off. Pending items older than 30 days drop off. Counting starts from the day this version was installed, so there's no backlog.
+  - **Reminders** have a date and an optional time. They show as Overdue, Today, Upcoming or Done, and can be added by the person or by the admin.
+- Start and End times come from the **server's clock**, so changing a computer's clock can't fake them.
+- The admin can **edit any task**: rename it, change it between Daily, Weekly and Monthly, set the due day, or reassign it to someone else. Tasks named "(Weekly)" were switched to weekly, due Monday, automatically.
+- The admin's Overview also shows **Pending work** grouped by person, and **Employee notes** for the selected day.
 - Open dashboards check for changes every 15 seconds, and straight away when you return to the tab.
 
 ## Files
@@ -128,6 +137,8 @@ If you add or delete tasks from the dashboard and don't change `SEED_VERSION`, n
 A day with no entry for a task shows that task as **To Do**. Each new day therefore starts with everything To Do, and nothing has to be reset.
 
 `notes` holds one notepad per employee per day (`employee`, `work_date`, `body`).
+
+`tasks.frequency` is `daily`, `weekly` or `monthly`, and `tasks.due_day` is the weekday (1 = Monday) or day of the month. A weekly task's entries use the week's Monday as `work_date`, and a monthly task's use the 1st of the month. `task_entries.started_on` and `ended_on` record the real days the work happened, and `skipped` marks an item the admin excused. `reminders` holds reminders. `app_meta.tracking_start` is the day Pending counting began.
 
 Start and end times are write-once, and an end time without a start time is refused. The API enforces this. To fix a genuine mistake, edit the row in phpMyAdmin.
 

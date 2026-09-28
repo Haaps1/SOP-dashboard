@@ -8,6 +8,10 @@ window.SEED_VERSION = 2;
 
 window.EMPLOYEES = ["Anil", "Madhu", "Manju", "Harsha", "Manju Designer"];
 
+// Work days for daily tasks (0 = Sunday, 1 = Monday ... 6 = Saturday).
+// A daily task not finished on one of these days shows as Pending the next day.
+window.WORK_DAYS = [1, 2, 3, 4, 5, 6];
+
 // Employees who get a "done" counter under the date, and what to call the
 // items being counted.
 window.DONE_COUNTERS = {

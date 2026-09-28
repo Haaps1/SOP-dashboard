@@ -21,7 +21,8 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
+const FREQUENCIES = ['daily', 'weekly', 'monthly'];
 const SESSION_COOKIE = 'sop_session';
 const SESSION_DAYS = 30;
 const MAX_FAILED_LOGINS = 20;   // per IP address (an office often shares one) ...
@@ -240,8 +241,69 @@ function ensure_schema(PDO $db): void
         KEY login_attempts_ip (ip, attempted_at)
     ) $opts");
 
+    // v3: weekly/monthly tasks, pending work and reminders.
+    add_column($db, 'tasks', 'frequency', "VARCHAR(10) NOT NULL DEFAULT 'daily'");
+    add_column($db, 'tasks', 'due_day', 'TINYINT UNSIGNED NULL');
+    add_column($db, 'task_entries', 'started_on', 'DATE NULL');
+    add_column($db, 'task_entries', 'ended_on', 'DATE NULL');
+    add_column($db, 'task_entries', 'skipped', 'TINYINT(1) NOT NULL DEFAULT 0');
+    $db->exec("CREATE TABLE IF NOT EXISTS reminders (
+        id CHAR(36) NOT NULL PRIMARY KEY,
+        employee VARCHAR(100) NOT NULL,
+        title VARCHAR(300) NOT NULL,
+        due_date DATE NOT NULL,
+        due_time TIME NULL,
+        done_at DATETIME NULL,
+        created_by VARCHAR(100) NOT NULL,
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        KEY reminders_employee_due (employee, due_date)
+    ) $opts");
+    if ((int) $v < 3) {
+        // Tasks already named "(Weekly)" become weekly tasks due on Monday.
+        $db->exec("UPDATE tasks SET frequency = 'weekly', due_day = 1 WHERE frequency = 'daily' AND title LIKE '%(Weekly)%'");
+    }
+    // Pending work is only counted from the day this version went live.
+    $db->prepare("INSERT IGNORE INTO app_meta (meta_key, meta_value) VALUES ('tracking_start', ?)")->execute([date('Y-m-d')]);
+
     $db->prepare("INSERT INTO app_meta (meta_key, meta_value) VALUES ('schema_version', ?)
                   ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)")->execute([(string) SCHEMA_VERSION]);
+}
+
+function add_column(PDO $db, string $table, string $column, string $ddl): void
+{
+    $q = $db->prepare('SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?');
+    $q->execute([$table, $column]);
+    if (!$q->fetchColumn()) {
+        $db->exec("ALTER TABLE `$table` ADD COLUMN `$column` $ddl");
+    }
+}
+
+function meta(PDO $db, string $key): ?string
+{
+    $q = $db->prepare('SELECT meta_value FROM app_meta WHERE meta_key = ?');
+    $q->execute([$key]);
+    $v = $q->fetchColumn();
+    return $v === false ? null : $v;
+}
+
+// Validate a task type and its due day: weekly tasks are due on a weekday
+// (1 = Monday ... 7 = Sunday), monthly tasks on a day of the month (1-31).
+function frequency_params(array $in, ?array $current = null): array
+{
+    $frequency = $in['frequency'] ?? ($current['frequency'] ?? 'daily');
+    if (!in_array($frequency, FREQUENCIES, true)) {
+        fail('Choose Daily, Weekly or Monthly.');
+    }
+    $due = $in['due_day'] ?? ($current && $current['frequency'] === $frequency ? $current['due_day'] : null);
+    if ($frequency === 'daily') {
+        return ['daily', null];
+    }
+    $due = $due === null ? 1 : (int) $due;
+    $max = $frequency === 'weekly' ? 7 : 31;
+    if ($due < 1 || $due > $max) {
+        fail($frequency === 'weekly' ? 'Choose a weekday.' : 'Choose a day of the month (1-31).');
+    }
+    return [$frequency, $due];
 }
 
 ensure_schema($db);
@@ -385,7 +447,13 @@ function session_payload(PDO $db, ?array $s): array
         ensure_users($db);
         $users = user_list($db);
     }
-    return ['site_ok' => $siteOk, 'user' => $user, 'users' => $users];
+    return [
+        'site_ok' => $siteOk,
+        'user' => $user,
+        'users' => $users,
+        'today' => date('Y-m-d'),
+        'tracking_start' => $user ? (meta($db, 'tracking_start') ?? date('Y-m-d')) : null,
+    ];
 }
 
 // ---------------------------------------------------------------------------
@@ -432,12 +500,13 @@ function apply_seed(PDO $db, int $version, array $seed): bool
             }
         }
         $update = $db->prepare('UPDATE tasks SET position = ?, from_seed = 1 WHERE id = ?');
-        $insert = $db->prepare('INSERT INTO tasks (id, employee, title, position, from_seed) VALUES (?, ?, ?, ?, 1)');
+        $insert = $db->prepare('INSERT INTO tasks (id, employee, title, position, from_seed, frequency, due_day) VALUES (?, ?, ?, ?, 1, ?, ?)');
         foreach ($rows as $r) {
             if (isset($byKey[$key($r)])) {
                 $update->execute([$r['position'], $byKey[$key($r)]['id']]);
             } else {
-                $insert->execute([uuid4(), $r['employee'], $r['title'], $r['position']]);
+                $weekly = stripos($r['title'], '(Weekly)') !== false;
+                $insert->execute([uuid4(), $r['employee'], $r['title'], $r['position'], $weekly ? 'weekly' : 'daily', $weekly ? 1 : null]);
             }
         }
         $db->prepare("INSERT INTO app_meta (meta_key, meta_value) VALUES ('seed_version', ?)
@@ -605,38 +674,59 @@ switch ($action) {
         respond(200, ['data' => $changed]);
 
     case 'listTasks':
+        $cols = 'id, employee, title, position, frequency, due_day, created_at';
         if ($isAdmin) {
-            $q = $db->query('SELECT id, employee, title, position, created_at FROM tasks ORDER BY position, created_at');
+            $q = $db->query("SELECT $cols FROM tasks ORDER BY position, created_at");
         } else {
-            $q = $db->prepare('SELECT id, employee, title, position, created_at FROM tasks WHERE employee = ? ORDER BY position, created_at');
+            $q = $db->prepare("SELECT $cols FROM tasks WHERE employee = ? ORDER BY position, created_at");
             $q->execute([$me]);
         }
         $rows = $q->fetchAll();
         foreach ($rows as &$r) {
             $r['position'] = (int) $r['position'];
+            $r['due_day'] = $r['due_day'] === null ? null : (int) $r['due_day'];
         }
         respond(200, ['data' => $rows]);
 
     case 'listEntries':
-        $date = date_param($input, 'date');
-        if ($isAdmin) {
-            $q = $db->prepare('SELECT task_id, start_time, end_time, quantity FROM task_entries WHERE work_date = ?');
-            $q->execute([$date]);
+    case 'listEntriesRange':
+        // listEntries: the given dates (a day, a week start, a month start).
+        // listEntriesRange: every entry between two dates (for pending work).
+        $cols = 'e.task_id, e.work_date, e.start_time, e.end_time, e.started_on, e.ended_on, e.quantity, e.skipped';
+        if ($action === 'listEntries') {
+            $dates = $input['dates'] ?? (isset($input['date']) ? [$input['date']] : null);
+            if (!is_array($dates) || !$dates || count($dates) > 10) {
+                fail('Invalid dates.');
+            }
+            $dates = array_values(array_unique(array_map(fn($d) => date_param(['d' => $d], 'd'), $dates)));
+            $where = 'e.work_date IN (' . implode(',', array_fill(0, count($dates), '?')) . ')';
+            $params = $dates;
         } else {
-            $q = $db->prepare('SELECT e.task_id, e.start_time, e.end_time, e.quantity FROM task_entries e
-                               JOIN tasks t ON t.id = e.task_id WHERE e.work_date = ? AND t.employee = ?');
-            $q->execute([$date, $me]);
+            $from = date_param($input, 'from');
+            $to = date_param($input, 'to');
+            if ((strtotime($to) - strtotime($from)) / 86400 > 200) {
+                fail('Choose a shorter range.');
+            }
+            $where = 'e.work_date BETWEEN ? AND ?';
+            $params = [$from, $to];
         }
+        if (!$isAdmin) {
+            $where .= ' AND t.employee = ?';
+            $params[] = $me;
+        }
+        $q = $db->prepare("SELECT $cols FROM task_entries e JOIN tasks t ON t.id = e.task_id WHERE $where");
+        $q->execute($params);
         $rows = $q->fetchAll();
         foreach ($rows as &$r) {
             $r['quantity'] = $r['quantity'] === null ? null : (int) $r['quantity'];
+            $r['skipped'] = (bool) $r['skipped'];
         }
         respond(200, ['data' => $rows]);
 
     case 'listWorkDates':
         $employee = $isAdmin ? str_param($input, 'employee', 100) : $me;
-        $q = $db->prepare('SELECT DISTINCT e.work_date FROM task_entries e JOIN tasks t ON t.id = e.task_id
-                           WHERE t.employee = ? AND e.work_date BETWEEN ? AND ? AND e.start_time IS NOT NULL');
+        $q = $db->prepare('SELECT DISTINCT COALESCE(e.started_on, e.work_date) FROM task_entries e JOIN tasks t ON t.id = e.task_id
+                           WHERE t.employee = ? AND COALESCE(e.started_on, e.work_date) BETWEEN ? AND ? AND e.start_time IS NOT NULL');
         $q->execute([$employee, date_param($input, 'from'), date_param($input, 'to')]);
         respond(200, ['data' => $q->fetchAll(PDO::FETCH_COLUMN)]);
 
@@ -666,16 +756,40 @@ switch ($action) {
             $q->execute([$employee]);
             $position = (int) $q->fetchColumn();
         }
+        [$frequency, $dueDay] = frequency_params($input);
         $id = uuid4();
-        $db->prepare('INSERT INTO tasks (id, employee, title, position, from_seed) VALUES (?, ?, ?, ?, 0)')
-            ->execute([$id, $employee, $title, $position]);
+        $db->prepare('INSERT INTO tasks (id, employee, title, position, from_seed, frequency, due_day) VALUES (?, ?, ?, ?, 0, ?, ?)')
+            ->execute([$id, $employee, $title, $position, $frequency, $dueDay]);
         respond(200, ['data' => ['id' => $id]]);
+
+    case 'updateTask':
+        // Admin: rename, change Daily/Weekly/Monthly and due day, or reassign.
+        require_admin($isAdmin);
+        $t = require_own_task($db, true, null, id_param($input, 'id'));
+        $q = $db->prepare('SELECT frequency, due_day FROM tasks WHERE id = ?');
+        $q->execute([$t['id']]);
+        $current = $q->fetch();
+        $title = isset($input['title']) ? str_param($input, 'title', 200) : $t['title'];
+        [$frequency, $dueDay] = frequency_params($input, $current);
+        $employee = isset($input['employee']) ? str_param($input, 'employee', 100) : $t['employee'];
+        $position = (int) $t['position'];
+        if ($employee !== $t['employee']) {
+            if (!employee_exists($db, $employee)) {
+                fail('Choose someone on the team to assign this task to.');
+            }
+            $q = $db->prepare('SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE employee = ?');
+            $q->execute([$employee]);
+            $position = (int) $q->fetchColumn();
+        }
+        $db->prepare('UPDATE tasks SET title = ?, frequency = ?, due_day = ?, employee = ?, position = ? WHERE id = ?')
+            ->execute([$title, $frequency, $dueDay, $employee, $position, $t['id']]);
+        respond(200, ['data' => true]);
 
     case 'duplicateTask':
         // Copy a task directly below the original, as "Title (2)", "(3)", ...
         $t = require_own_task($db, $isAdmin, $me, id_param($input, 'id'));
         $db->beginTransaction();
-        $q = $db->prepare('SELECT id, title FROM tasks WHERE employee = ? ORDER BY position, created_at FOR UPDATE');
+        $q = $db->prepare('SELECT id, title, frequency, due_day FROM tasks WHERE employee = ? ORDER BY position, created_at FOR UPDATE');
         $q->execute([$t['employee']]);
         $list = $q->fetchAll();
         $base = preg_replace('/ \(\d+\)$/', '', $t['title']);
@@ -692,8 +806,8 @@ switch ($action) {
         foreach ($list as $row) {
             $upd->execute([$pos++, $row['id']]);
             if ($row['id'] === $t['id']) {
-                $db->prepare('INSERT INTO tasks (id, employee, title, position, from_seed) VALUES (?, ?, ?, ?, 0)')
-                    ->execute([$newId, $t['employee'], $title, $pos++]);
+                $db->prepare('INSERT INTO tasks (id, employee, title, position, from_seed, frequency, due_day) VALUES (?, ?, ?, ?, 0, ?, ?)')
+                    ->execute([$newId, $t['employee'], $title, $pos++, $row['frequency'], $row['due_day']]);
             }
         }
         $db->commit();
@@ -723,31 +837,60 @@ switch ($action) {
         respond(200, ['data' => true]);
 
     case 'saveEntry':
-        // Start and end times are write-once: an existing time is never
-        // changed or cleared, and a task can't be ended before it is started.
+        // Start and end times are write-once and come from the server's clock:
+        // sending a start_time or end_time means "stamp it now" if it's empty.
+        // An existing time is never changed or cleared, and a task can't be
+        // ended before it is started. `date` is the task's day, or the first
+        // day of its week/month for weekly and monthly tasks.
         $taskId = id_param($input, 'task_id');
         require_own_task($db, $isAdmin, $me, $taskId);
         $date = date_param($input, 'date');
-        $start = time_param($input, 'start_time');
-        $end = time_param($input, 'end_time');
+        $today = date('Y-m-d');
+        if ($date > $today) {
+            fail("That day hasn't started yet.");
+        }
+        $wantStart = ($input['start_time'] ?? null) !== null;
+        $wantEnd = ($input['end_time'] ?? null) !== null;
         $qty = $input['quantity'] ?? null;
         if ($qty !== null && (!is_int($qty) || $qty < 0 || $qty > 100000)) {
             fail('Invalid quantity.');
         }
         $db->beginTransaction();
-        $cur = $db->prepare('SELECT start_time, end_time FROM task_entries WHERE task_id = ? AND work_date = ? FOR UPDATE');
+        $cur = $db->prepare('SELECT start_time, end_time, started_on, ended_on FROM task_entries WHERE task_id = ? AND work_date = ? FOR UPDATE');
         $cur->execute([$taskId, $date]);
-        $row = $cur->fetch() ?: ['start_time' => null, 'end_time' => null];
-        $start = $row['start_time'] ?? $start;
-        $end = $row['end_time'] ?? $end;
-        if ($end !== null && $start === null) {
-            $db->rollBack();
-            fail('A task has to be started before it can be ended.');
+        $row = $cur->fetch() ?: ['start_time' => null, 'end_time' => null, 'started_on' => null, 'ended_on' => null];
+        $now = date('H:i:s');
+        $start = $row['start_time'];
+        $startedOn = $row['started_on'];
+        $end = $row['end_time'];
+        $endedOn = $row['ended_on'];
+        if ($start === null && $wantStart) {
+            $start = $now;
+            $startedOn = $today;
         }
-        $db->prepare('INSERT INTO task_entries (task_id, work_date, start_time, end_time, quantity) VALUES (?, ?, ?, ?, ?)
-                      ON DUPLICATE KEY UPDATE start_time = VALUES(start_time), end_time = VALUES(end_time), quantity = VALUES(quantity)')
-            ->execute([$taskId, $date, $start, $end, $qty]);
+        if ($end === null && $wantEnd) {
+            if ($start === null) {
+                $db->rollBack();
+                fail('A task has to be started before it can be ended.');
+            }
+            $end = $now;
+            $endedOn = $today;
+        }
+        $db->prepare('INSERT INTO task_entries (task_id, work_date, start_time, end_time, started_on, ended_on, quantity) VALUES (?, ?, ?, ?, ?, ?, ?)
+                      ON DUPLICATE KEY UPDATE start_time = VALUES(start_time), end_time = VALUES(end_time),
+                          started_on = VALUES(started_on), ended_on = VALUES(ended_on), quantity = VALUES(quantity)')
+            ->execute([$taskId, $date, $start, $end, $startedOn, $endedOn, $qty]);
         $db->commit();
+        respond(200, ['data' => ['start_time' => $start, 'end_time' => $end, 'started_on' => $startedOn, 'ended_on' => $endedOn]]);
+
+    case 'skipEntry':
+        // Admin: excuse (or un-excuse) a missed task, e.g. for a day off.
+        require_admin($isAdmin);
+        $taskId = id_param($input, 'task_id');
+        require_own_task($db, true, null, $taskId);
+        $db->prepare('INSERT INTO task_entries (task_id, work_date, skipped) VALUES (?, ?, ?)
+                      ON DUPLICATE KEY UPDATE skipped = VALUES(skipped)')
+            ->execute([$taskId, date_param($input, 'date'), empty($input['skipped']) ? 0 : 1]);
         respond(200, ['data' => true]);
 
     case 'saveNote':
@@ -821,6 +964,50 @@ switch ($action) {
         $db->prepare('UPDATE users SET active = 0 WHERE name = ?')->execute([$name]);
         respond(200, ['data' => user_list($db)]);
 
+    // ---- Reminders ------------------------------------------------------------
+
+    case 'listReminders':
+        $sql = 'SELECT id, employee, title, due_date, due_time, done_at, created_by FROM reminders
+                WHERE (done_at IS NULL OR done_at > NOW() - INTERVAL 14 DAY)';
+        $params = [];
+        if (!$isAdmin) {
+            $sql .= ' AND employee = ?';
+            $params[] = $me;
+        }
+        $q = $db->prepare($sql . ' ORDER BY due_date, due_time IS NULL, due_time, created_at');
+        $q->execute($params);
+        respond(200, ['data' => $q->fetchAll()]);
+
+    case 'addReminder':
+        $employee = $isAdmin ? str_param($input, 'employee', 100) : $me;
+        if ($isAdmin && !employee_exists($db, $employee)) {
+            fail('Choose someone on the team.');
+        }
+        $dueTime = time_param($input, 'due_time');
+        $id = uuid4();
+        $db->prepare('INSERT INTO reminders (id, employee, title, due_date, due_time, created_by) VALUES (?, ?, ?, ?, ?, ?)')
+            ->execute([$id, $employee, str_param($input, 'title', 300), date_param($input, 'due_date'), $dueTime, $isAdmin ? ADMIN_NAME : $me]);
+        respond(200, ['data' => ['id' => $id]]);
+
+    case 'setReminderDone':
+    case 'removeReminder':
+        $id = id_param($input, 'id');
+        $q = $db->prepare('SELECT employee FROM reminders WHERE id = ?');
+        $q->execute([$id]);
+        $owner = $q->fetchColumn();
+        if ($owner === false) {
+            fail('That reminder no longer exists.', 404);
+        }
+        if (!$isAdmin && $owner !== $me) {
+            fail('That reminder belongs to someone else.', 403);
+        }
+        if ($action === 'removeReminder') {
+            $db->prepare('DELETE FROM reminders WHERE id = ?')->execute([$id]);
+        } else {
+            $db->prepare('UPDATE reminders SET done_at = ' . (empty($input['done']) ? 'NULL' : 'NOW()') . ' WHERE id = ?')->execute([$id]);
+        }
+        respond(200, ['data' => true]);
+
     // ---- Admin: reports -----------------------------------------------------
 
     case 'report':
@@ -833,16 +1020,20 @@ switch ($action) {
         if ((strtotime($to) - strtotime($from)) / 86400 > 400) {
             fail('Choose a range of up to a year.');
         }
-        $q = $db->prepare("SELECT t.employee, e.work_date,
+        // Work is counted on the day it was finished (or started).
+        $day = 'COALESCE(e.ended_on, e.started_on, e.work_date)';
+        $q = $db->prepare("SELECT t.employee, $day AS work_date,
                 SUM(e.start_time IS NOT NULL) AS tasks_started,
                 SUM(e.end_time IS NOT NULL) AS tasks_done,
-                SUM(CASE WHEN e.end_time IS NOT NULL
-                         THEN MOD(TIME_TO_SEC(e.end_time) - TIME_TO_SEC(e.start_time) + 86400, 86400) ELSE 0 END) DIV 60 AS minutes,
+                SUM(CASE WHEN e.end_time IS NULL THEN 0
+                         WHEN e.started_on IS NOT NULL AND e.ended_on IS NOT NULL
+                         THEN TIMESTAMPDIFF(SECOND, TIMESTAMP(e.started_on, e.start_time), TIMESTAMP(e.ended_on, e.end_time))
+                         ELSE MOD(TIME_TO_SEC(e.end_time) - TIME_TO_SEC(e.start_time) + 86400, 86400) END) DIV 60 AS minutes,
                 SUM(COALESCE(e.quantity, 0)) AS quantity
             FROM task_entries e JOIN tasks t ON t.id = e.task_id
-            WHERE e.work_date BETWEEN ? AND ? AND (e.start_time IS NOT NULL OR e.quantity > 0)
-            GROUP BY t.employee, e.work_date
-            ORDER BY e.work_date, t.employee");
+            WHERE $day BETWEEN ? AND ? AND (e.start_time IS NOT NULL OR e.quantity > 0)
+            GROUP BY t.employee, $day
+            ORDER BY $day, t.employee");
         $q->execute([$from, $to]);
         $rows = array_map(fn($r) => [
             'employee' => $r['employee'],
