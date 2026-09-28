@@ -27,7 +27,7 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const FREQUENCIES = ['daily', 'weekly', 'monthly'];
 define('ADMIN_ENTRY', defined('SOP_ADMIN_ENTRY') && SOP_ADMIN_ENTRY);
 define('SESSION_COOKIE', ADMIN_ENTRY ? 'sop_admin_session' : 'sop_session');
@@ -70,6 +70,10 @@ if (!is_string($config['site_password'] ?? null) || $config['site_password'] ===
     fail("Set 'site_password' and 'admin_password' in api/config.php.", 500);
 }
 date_default_timezone_set($config['timezone'] ?? 'Asia/Kolkata');
+// Sign people out after this many minutes without any activity (mouse,
+// keyboard or touch in the page; the dashboard's background checks for
+// updates don't count). Optional 'idle_minutes' in config.php, default 2 hours.
+define('IDLE_MINUTES', max(5, (int) ($config['idle_minutes'] ?? 120)));
 
 try {
     $db = new PDO(
@@ -254,6 +258,8 @@ function ensure_schema(PDO $db): void
     add_column($db, 'task_entries', 'started_on', 'DATE NULL');
     add_column($db, 'task_entries', 'ended_on', 'DATE NULL');
     add_column($db, 'task_entries', 'skipped', 'TINYINT(1) NOT NULL DEFAULT 0');
+    // v4: automatic sign-out after inactivity.
+    add_column($db, 'sessions', 'last_active', 'DATETIME NULL');
     $db->exec("CREATE TABLE IF NOT EXISTS reminders (
         id CHAR(36) NOT NULL PRIMARY KEY,
         employee VARCHAR(100) NOT NULL,
@@ -342,13 +348,25 @@ function load_session(PDO $db): ?array
     if (!is_string($token) || !preg_match('/^[a-f0-9]{64}$/', $token)) {
         return null;
     }
-    $q = $db->prepare('SELECT s.token_hash, s.site_ok, s.role, s.user_id, s.expires_at, u.name AS user_name, u.active AS user_active
+    $q = $db->prepare('SELECT s.token_hash, s.site_ok, s.role, s.user_id, s.expires_at, s.last_active, u.name AS user_name, u.active AS user_active
                        FROM sessions s LEFT JOIN users u ON u.id = s.user_id
                        WHERE s.token_hash = ? AND s.expires_at > NOW()');
     $q->execute([hash('sha256', $token)]);
     $s = $q->fetch();
     if (!$s) {
         return null;
+    }
+    // Inactive too long: sign out (the whole session, like pressing Lock).
+    if ($s['last_active'] !== null && strtotime($s['last_active']) < time() - IDLE_MINUTES * 60) {
+        $db->prepare('DELETE FROM sessions WHERE token_hash = ?')->execute([$s['token_hash']]);
+        set_session_cookie('', time() - 3600);
+        return null;
+    }
+    // The page sends X-User-Active: 1 when the person used it recently; the
+    // background update checks send 0 and don't keep the session alive.
+    $active = ($_SERVER['HTTP_X_USER_ACTIVE'] ?? '') === '1';
+    if ($s['last_active'] === null || ($active && strtotime($s['last_active']) < time() - 60)) {
+        $db->prepare('UPDATE sessions SET last_active = NOW() WHERE token_hash = ?')->execute([$s['token_hash']]);
     }
     // A removed employee is signed out.
     if ($s['role'] === 'employee' && (int) $s['user_active'] !== 1) {
@@ -378,7 +396,7 @@ function create_session(PDO $db): array
 {
     $token = bin2hex(random_bytes(32));
     $expires = time() + SESSION_DAYS * 86400;
-    $db->prepare('INSERT INTO sessions (token_hash, site_ok, expires_at) VALUES (?, 1, FROM_UNIXTIME(?))')
+    $db->prepare('INSERT INTO sessions (token_hash, site_ok, expires_at, last_active) VALUES (?, 1, FROM_UNIXTIME(?), NOW())')
         ->execute([hash('sha256', $token), $expires]);
     set_session_cookie($token, $expires);
     // Housekeeping.
@@ -459,6 +477,7 @@ function session_payload(PDO $db, ?array $s): array
         'user' => $user,
         'users' => $users,
         'entry' => ADMIN_ENTRY ? 'admin' : 'team',
+        'idle_minutes' => IDLE_MINUTES,
         'today' => date('Y-m-d'),
         'tracking_start' => $user ? (meta($db, 'tracking_start') ?? date('Y-m-d')) : null,
     ];

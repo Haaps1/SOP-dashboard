@@ -14,6 +14,42 @@
   // preview opens the admin side with #admin in the address.
   const MODE = config.mode === "admin" || (config.backend !== "php" && location.hash === "#admin") ? "admin" : "team";
 
+  // ---- Inactivity sign-out ---------------------------------------------------
+  // After IDLE minutes with no mouse, keyboard, touch or scrolling in the page
+  // (in any open tab of this site), the person is signed out as if they had
+  // pressed Lock. The server enforces the same limit; the page tells it when
+  // the person is actually active, so background update checks don't count.
+  let idleMinutes = 120; // replaced by the server's setting after sign-in
+  const ACTIVITY_KEY = "sop-dashboard:last-activity:" + MODE;
+  let lastActivity = Date.now();
+  let lastActivitySaved = 0;
+
+  function lastActive() {
+    let shared = 0;
+    try {
+      shared = Number(localStorage.getItem(ACTIVITY_KEY)) || 0;
+    } catch (e) {}
+    return Math.max(lastActivity, shared);
+  }
+
+  function markActive() {
+    lastActivity = Date.now();
+    if (lastActivity - lastActivitySaved > 15000) {
+      lastActivitySaved = lastActivity;
+      try {
+        localStorage.setItem(ACTIVITY_KEY, String(lastActivity));
+      } catch (e) {}
+    }
+  }
+
+  function recentlyActive() {
+    return Date.now() - lastActive() < 5 * 60 * 1000;
+  }
+
+  for (const type of ["pointerdown", "pointermove", "keydown", "wheel", "touchstart", "scroll"]) {
+    window.addEventListener(type, markActive, { passive: true, capture: true });
+  }
+
   // Flatten SEED_TASKS into rows: { employee, title, position }.
   function seedRows() {
     const rows = [];
@@ -282,7 +318,7 @@
       try {
         res = await fetch(apiUrl, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-User-Active": recentlyActive() ? "1" : "0" },
           body: JSON.stringify({ action, ...params }),
           cache: "no-store",
           credentials: "same-origin",
@@ -2787,11 +2823,15 @@
   async function applySession(s) {
     // Never run ahead of the server's date (it refuses times for future days).
     if (s.today) todayStr = s.today < ymd(new Date()) ? s.today : ymd(new Date());
+    if (s.idle_minutes) idleMinutes = s.idle_minutes;
+    // Signed out by the timer here, or by the server after the same time.
+    const idleNote = idleSignedOut || (me && idleTooLong()) ? "You were signed out after " + formatHours(idleMinutes) + " without activity. Please sign in again." : "";
     if (MODE === "admin") {
       if (!s.user) {
         me = null;
         el.adminPassword.value = "";
-        el.adminError.textContent = "";
+        el.adminError.textContent = idleNote;
+        idleSignedOut = false;
         return showAuthStep("admin");
       }
       return enterApp(s);
@@ -2799,7 +2839,8 @@
     if (!s.site_ok) {
       me = null;
       el.sitePassword.value = "";
-      el.siteError.textContent = "";
+      el.siteError.textContent = idleNote;
+      idleSignedOut = false;
       return showAuthStep("site");
     }
     if (!s.user) {
@@ -2819,6 +2860,8 @@
   }
 
   async function enterApp(s) {
+    markActive();
+    idleSignedOut = false;
     me = s.user;
     trackingStart = s.tracking_start || todayStr;
     el.auth.hidden = true;
@@ -2906,6 +2949,23 @@
       showBanner(e.message, true);
     }
   }
+
+  let idleSignedOut = false;
+
+  function idleTooLong() {
+    return Date.now() - lastActive() > idleMinutes * 60 * 1000;
+  }
+
+  async function checkIdle() {
+    if (!me || !idleTooLong()) return;
+    idleSignedOut = true;
+    await signOut("logout");
+  }
+  setInterval(checkIdle, 30 * 1000);
+  // Timers pause while a computer sleeps, so check again when the page comes back.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") checkIdle();
+  });
   el.switchUser.addEventListener("click", () => signOut("switchUser"));
   el.lock.addEventListener("click", () => signOut("logout"));
   el.authLock.addEventListener("click", () => signOut("logout"));
