@@ -6,6 +6,11 @@ RewriteEngine On
 RewriteCond %{HTTPS} !=on
 RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 
+# Keep the dashboard out of search engines (every file, not just the page).
+<IfModule mod_headers.c>
+  Header set X-Robots-Tag "noindex, nofollow, noarchive"
+</IfModule>
+
 # Make browsers check for a newer version, so updates show up straight away.
 <IfModule mod_headers.c>
   <FilesMatch "\.(html|js|css)$">
