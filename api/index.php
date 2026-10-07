@@ -27,7 +27,7 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 // weekdays = set days of the week; due_day is then a bitmask (Mon = 1, Tue = 2,
 // Wed = 4 ... Sun = 64) and the task is part of the daily list on those days.
 // monthdays = set dates of the month; due_day is a bitmask of dates (1st = 1,
@@ -81,6 +81,8 @@ define('ADMIN_USERNAME', is_string($config['admin_username'] ?? null) && trim($c
 define('VIDEO_SHOOTER', is_string($config['video_shooter'] ?? null) ? $config['video_shooter'] : 'Harsha');
 define('VIDEO_EDITORS', is_array($config['video_editors'] ?? null) ? array_values($config['video_editors']) : ['Harsha', 'Manju Designer']);
 define('VIDEO_REVIEWER', is_string($config['video_reviewer'] ?? null) ? $config['video_reviewer'] : 'Madhu');
+define('VIDEO_POSTER', is_string($config['video_poster'] ?? null) ? $config['video_poster'] : 'Madhu');
+const VIDEO_PLATFORMS = ['instagram', 'facebook', 'youtube'];
 date_default_timezone_set($config['timezone'] ?? 'Asia/Kolkata');
 // Sign people out after this many minutes without any activity (mouse,
 // keyboard or touch in the page; the dashboard's background checks for
@@ -337,6 +339,10 @@ function ensure_schema(PDO $db): void
     // v10: editing time on videos (Start / Pause / Resume, like tasks).
     add_column($db, 'videos', 'worked_sec', 'INT UNSIGNED NULL');
     add_column($db, 'videos', 'resumed_at', 'DATETIME NULL');
+    // v11: posting approved videos (where, and when; write-once).
+    add_column($db, 'videos', 'platforms', 'VARCHAR(60) NULL');
+    add_column($db, 'videos', 'posted_at', 'DATETIME NULL');
+    add_column($db, 'videos', 'posted_by', 'VARCHAR(100) NULL');
     $db->exec("CREATE TABLE IF NOT EXISTS task_skips (
         task_id CHAR(36) NOT NULL,
         from_date DATE NOT NULL,
@@ -601,7 +607,7 @@ function session_payload(PDO $db, ?array $s): array
         'today' => date('Y-m-d'),
         'tracking_start' => $user ? (meta($db, 'tracking_start') ?? date('Y-m-d')) : null,
         'admin_username' => $user && $user['role'] === 'admin' ? admin_username($db) : null,
-        'video' => $user ? ['shooter' => VIDEO_SHOOTER, 'editors' => VIDEO_EDITORS, 'reviewer' => VIDEO_REVIEWER] : null,
+        'video' => $user ? ['shooter' => VIDEO_SHOOTER, 'editors' => VIDEO_EDITORS, 'reviewer' => VIDEO_REVIEWER, 'poster' => VIDEO_POSTER] : null,
     ];
 }
 
@@ -841,7 +847,7 @@ function video_approvers(string $editor): array
 
 function video_team_member(bool $isAdmin, ?string $me): bool
 {
-    return $isAdmin || in_array($me, array_merge([VIDEO_SHOOTER, VIDEO_REVIEWER], VIDEO_EDITORS), true);
+    return $isAdmin || in_array($me, array_merge([VIDEO_SHOOTER, VIDEO_REVIEWER, VIDEO_POSTER], VIDEO_EDITORS), true);
 }
 
 function require_shooter(bool $isAdmin, ?string $me): void
@@ -1349,7 +1355,7 @@ switch ($action) {
         if ($shoots) {
             $ids = array_keys($byId);
             $in = implode(',', array_fill(0, count($ids), '?'));
-            $q = $db->prepare("SELECT id, shoot_id, topic, position, editor, status, started_at, submitted_at, approved_at, rounds, note, worked_sec, resumed_at
+            $q = $db->prepare("SELECT id, shoot_id, topic, position, editor, status, started_at, submitted_at, approved_at, rounds, note, worked_sec, resumed_at, platforms, posted_at, posted_by
                                FROM videos WHERE shoot_id IN ($in) ORDER BY position, created_at");
             $q->execute($ids);
             $videos = $q->fetchAll();
@@ -1366,6 +1372,7 @@ switch ($action) {
                 $v['position'] = (int) $v['position'];
                 $v['rounds'] = (int) $v['rounds'];
                 $v['worked_sec'] = $v['worked_sec'] === null ? null : (int) $v['worked_sec'];
+                $v['platforms'] = $v['platforms'] === null || $v['platforms'] === '' ? [] : explode(',', $v['platforms']);
                 $v['reviews'] = $reviews[$v['id']] ?? [];
                 $v['approvers'] = $v['editor'] !== null ? video_approvers($v['editor']) : [];
                 $shoots[$byId[$v['shoot_id']]]['videos'][] = $v;
@@ -1477,6 +1484,31 @@ switch ($action) {
                 ->execute([$v['id']]);
             $db->prepare('DELETE FROM video_reviews WHERE video_id = ?')->execute([$v['id']]);
         }
+        respond(200, ['data' => true]);
+
+    case 'postVideo':
+        // The poster marks an approved video as posted, and where. The date,
+        // time and platforms are stamped once and can't be changed.
+        if (!$isAdmin && $me !== VIDEO_POSTER) {
+            fail('Only ' . VIDEO_POSTER . ' posts videos.', 403);
+        }
+        $v = load_video($db, id_param($input, 'id'));
+        if ($v['status'] !== 'approved') {
+            fail('Only approved videos can be posted.', 409);
+        }
+        if ($v['posted_at'] !== null) {
+            fail('This video was already marked as posted.', 409);
+        }
+        $platforms = $input['platforms'] ?? [];
+        if (!is_array($platforms)) {
+            fail('Choose where it was posted.');
+        }
+        $platforms = array_values(array_intersect(VIDEO_PLATFORMS, $platforms));
+        if (!$platforms) {
+            fail('Tick where it was posted: Instagram, Facebook or YouTube.');
+        }
+        $db->prepare('UPDATE videos SET platforms = ?, posted_at = NOW(), posted_by = ? WHERE id = ? AND posted_at IS NULL')
+            ->execute([implode(',', $platforms), $isAdmin ? ADMIN_NAME : $me, $v['id']]);
         respond(200, ['data' => true]);
 
     case 'reviewVideo':

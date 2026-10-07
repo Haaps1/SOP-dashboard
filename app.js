@@ -527,6 +527,7 @@
       assignVideo: (id, editor) => call("assignVideo", { id, editor }),
       startVideo: (id) => call("startVideo", { id }),
       pauseVideo: (id) => call("pauseVideo", { id }),
+      postVideo: (id, platforms) => call("postVideo", { id, platforms }),
       submitVideo: (id) => call("submitVideo", { id }),
       reviewVideo: (id, decision, comment) => call("reviewVideo", { id, decision, comment }),
       setPositions: (updates) => call("setPositions", { updates }),
@@ -1058,6 +1059,7 @@
     videosPanel: $("videos-panel"),
     videoSummary: $("video-summary"),
     videoMine: $("video-mine"),
+    videoPosted: $("video-posted"),
     shootNew: $("shoot-new"),
     shootForm: $("shoot-form"),
     shootClient: $("shoot-client"),
@@ -1277,20 +1279,32 @@
   let videosDirty = false;
   let editingShootId = null;
   let reviewOpenFor = null; // video id with the "Needs changes" box open
+  const postChecks = new Map(); // video id -> platforms ticked, not yet posted
+  const PLATFORMS = [
+    ["instagram", "Instagram"],
+    ["facebook", "Facebook"],
+    ["youtube", "YouTube"],
+  ];
+  const platformNames = (list) => list.map((k) => (PLATFORMS.find((p) => p[0] === k) || [k, k])[1]).join(", ");
 
+  const isVideoMember = (name) => Boolean(videoTeam && [videoTeam.shooter, videoTeam.reviewer, videoTeam.poster, ...videoTeam.editors].includes(name));
   function inVideoTeam() {
-    return Boolean(me && videoTeam && (isAdmin() || [videoTeam.shooter, videoTeam.reviewer, ...videoTeam.editors].includes(me.name)));
+    return Boolean(me && videoTeam && (isAdmin() || isVideoMember(me.name)));
   }
   const canShoot = () => Boolean(me && videoTeam && (isAdmin() || me.name === videoTeam.shooter));
   const allVideos = () => shoots.flatMap((sh) => sh.videos.map((v) => ({ ...v, shoot: sh })));
-  const showingVideos = () => inVideoTeam() && (isAdmin() ? active === VIDEOS : isPersonTab() && view === "videos");
+  const showingVideos = () =>
+    inVideoTeam() && (isAdmin() ? active === VIDEOS || (isPersonTab() && view === "videos" && isVideoMember(active)) : isPersonTab() && view === "videos");
+  // Whose videos the page shows: yours, or (admin) the person whose tab is open.
+  const videoWho = () => (!me ? null : isAdmin() ? (isPersonTab() ? active : null) : me.name);
 
-  function myVideoWork() {
-    if (!me || isAdmin() || !videoTeam) return { edit: [], approve: [] };
+  function myVideoWork(name = me && !isAdmin() ? me.name : null) {
+    if (!name || !videoTeam) return { edit: [], approve: [], post: [] };
     const all = allVideos();
     return {
-      edit: all.filter((v) => v.editor === me.name && ["assigned", "editing", "changes"].includes(v.status)),
-      approve: all.filter((v) => v.status === "review" && v.approvers.includes(me.name) && !v.reviews.some((r) => r.approver === me.name && r.decision === "approved")),
+      edit: all.filter((v) => v.editor === name && ["assigned", "editing", "changes"].includes(v.status)),
+      approve: all.filter((v) => v.status === "review" && v.approvers.includes(name) && !v.reviews.some((r) => r.approver === name && r.decision === "approved")),
+      post: name === videoTeam.poster ? all.filter((v) => v.status === "approved" && !v.posted_at).sort((a, b) => (a.approved_at || "").localeCompare(b.approved_at || "")) : [],
     };
   }
 
@@ -1414,9 +1428,10 @@
 
   // On the Daily tab: a reminder of videos waiting for you.
   function renderVideoHint(person) {
-    const w = person && view === "daily" && isToday() ? myVideoWork() : { edit: [], approve: [] };
+    const w = person && view === "daily" && isToday() ? myVideoWork() : { edit: [], approve: [], post: [] };
     const bits = [];
     if (w.approve.length) bits.push(w.approve.length + (w.approve.length === 1 ? " video" : " videos") + " to approve");
+    if (w.post.length) bits.push(w.post.length + (w.post.length === 1 ? " video" : " videos") + " ready to post");
     el.videoHint.hidden = !bits.length;
     el.videoHint.textContent = bits.length ? "Doctor videos: " + bits.join(" · ") + " — open Videos ›" : "";
   }
@@ -1424,13 +1439,14 @@
 
   function renderVideos() {
     const f = document.activeElement;
-    if (f && el.videosPanel.contains(f) && /^(INPUT|TEXTAREA|SELECT)$/.test(f.tagName) && !f.closest("#shoot-new")) {
+    if (f && el.videosPanel.contains(f) && /^(INPUT|TEXTAREA|SELECT)$/.test(f.tagName) && f.type !== "checkbox" && !f.closest("#shoot-new")) {
       videosDirty = true;
       return;
     }
     videosDirty = false;
     renderVideoSummary();
     renderMyVideos();
+    renderPostedVideos();
     el.shootNew.hidden = !canShoot();
     if (!el.shootDate.value) el.shootDate.value = todayStr;
     renderShoots();
@@ -1458,6 +1474,8 @@
       chip(vids.filter((v) => ["assigned", "editing", "changes"].includes(v.status)).length, "Being edited", "status-in_progress"),
       chip(vids.filter((v) => v.status === "review").length, "Waiting for approval", "status-todo"),
       chip(approved.length, "Approved this month", "status-done"),
+      chip(vids.filter((v) => v.status === "approved" && !v.posted_at).length, "Ready to post", "status-in_progress"),
+      chip(vids.filter((v) => v.posted_at && v.posted_at.slice(0, 10) >= month).length, "Posted this month", "status-done"),
       ...videoTeam.editors.map((ed) => chip(videosDoneToday(ed).length, "Done today by " + ed)),
       ...videoTeam.editors.map((ed) => chip(approved.filter((v) => v.editor === ed).length, "Approved, edited by " + ed))
     );
@@ -1478,17 +1496,27 @@
 
   // Your editing and your approvals, at the top for the people involved.
   function renderMyVideos() {
-    if (isAdmin()) return el.videoMine.replaceChildren();
-    const w = myVideoWork();
+    const who = videoWho();
+    if (!who) return el.videoMine.replaceChildren();
+    const readOnly = isAdmin(); // the admin sees someone's lists; they act on them
+    const w = myVideoWork(who);
     const blocks = [];
+    if (w.post.length) {
+      blocks.push(h("h3", "video-h", "Videos available to post (" + w.post.length + ")"));
+      for (const v of w.post) blocks.push(postCard(v, readOnly));
+    }
     if (w.approve.length) {
       blocks.push(h("h3", "video-h", "To approve (" + w.approve.length + ")"));
       for (const v of w.approve) {
         const card = h("div", "video-card");
         card.append(videoLine(v));
-        const others = v.approvers.filter((a) => a !== me.name);
+        const others = v.approvers.filter((a) => a !== who);
         const theirs = others.map((a) => a + (v.reviews.some((r) => r.approver === a && r.decision === "approved") ? " ✓" : ": waiting")).join(" · ");
         if (theirs) card.append(h("span", "video-sub", "Also approving: " + theirs));
+        if (readOnly) {
+          blocks.push(card);
+          continue;
+        }
         const actions = h("div", "video-actions");
         actions.append(
           videoButton("Approve", "btn-stamp btn-stamp-end", () => videoAction(() => store.reviewVideo(v.id, "approved", ""), "Approved “" + v.topic + "”.")),
@@ -1529,15 +1557,100 @@
         if (v.status === "changes" && v.note) card.append(h("span", "video-note", "Needs changes — " + v.note));
         const actions = h("div", "video-actions");
         const [pill, label] = videoState(v);
-        actions.append(h("span", "pill status-" + pill, label), ...videoButtons(v));
+        actions.append(h("span", "pill status-" + pill, label), ...(readOnly ? [] : videoButtons(v)));
         const mins = videoMinutes(v);
         if (mins != null) actions.append(h("span", "video-sub", formatDuration(mins) + " worked"));
         card.append(actions);
         blocks.push(card);
       }
     }
-    if (!blocks.length) blocks.push(h("p", "video-empty", "Nothing waiting for you right now."));
+    if (!blocks.length) blocks.push(h("p", "video-empty", readOnly ? "Nothing waiting for " + who + " right now." : "Nothing waiting for you right now."));
     el.videoMine.replaceChildren(...blocks);
+  }
+
+  // An approved video waiting to be posted: tick where, then Posted (stamped
+  // once with the date and time; it can't be changed after).
+  function postCard(v, readOnly) {
+    const card = h("div", "video-card");
+    card.append(videoLine(v));
+    if (v.approved_at) card.append(h("span", "video-sub", "Approved " + dayDate(v.approved_at.slice(0, 10)) + ", " + formatClock(v.approved_at.slice(11))));
+    const ticked = postChecks.get(v.id) || new Set();
+    const boxes = h("div", "post-checks");
+    for (const [key, label] of PLATFORMS) {
+      const wrap = h("label", "post-check");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = ticked.has(key);
+      box.disabled = readOnly;
+      box.addEventListener("change", () => {
+        const set = postChecks.get(v.id) || new Set();
+        if (box.checked) set.add(key);
+        else set.delete(key);
+        postChecks.set(v.id, set);
+      });
+      wrap.append(box, h("span", "", label));
+      boxes.append(wrap);
+    }
+    card.append(boxes);
+    if (!readOnly) {
+      const actions = h("div", "video-actions");
+      actions.append(
+        videoButton("Posted", "btn-stamp btn-stamp-end", () => {
+          const set = postChecks.get(v.id) || new Set();
+          if (!set.size) return showToast("Tick where it was posted: Instagram, Facebook or YouTube.");
+          const platforms = PLATFORMS.map((p) => p[0]).filter((k) => set.has(k));
+          videoAction(async () => {
+            await store.postVideo(v.id, platforms);
+            postChecks.delete(v.id);
+          }, "Marked “" + v.topic + "” as posted on " + platformNames(platforms) + ".");
+        })
+      );
+      card.append(actions);
+    }
+    return card;
+  }
+
+  // The posting record: what was posted, where and when (for the poster and
+  // the admin).
+  function renderPostedVideos() {
+    const who = videoWho();
+    const show = Boolean(videoTeam && (who ? who === videoTeam.poster : isAdmin()));
+    el.videoPosted.hidden = !show;
+    if (!show) return;
+    // Only what was posted on the selected day (pick a date to look back).
+    const posted = allVideos()
+      .filter((v) => v.posted_at && v.posted_at.slice(0, 10) === selectedDate)
+      .sort((a, b) => b.posted_at.localeCompare(a.posted_at));
+    const month = monthStart(selectedDate);
+    const monthCount = allVideos().filter((v) => v.posted_at && v.posted_at.slice(0, 10) >= month && v.posted_at.slice(0, 7) === month.slice(0, 7)).length;
+    const day = isToday() ? "today" : "on " + dayDate(selectedDate);
+    const blocks = [h("h3", "video-h", "Posted " + day + " (" + posted.length + ") · " + monthCount + " in " + parseYmd(selectedDate).toLocaleDateString("en-GB", { month: "long" }))];
+    if (!posted.length) {
+      blocks.push(h("p", "video-empty", "Nothing posted " + day + "."));
+    } else {
+      const scroll = h("div", "table-scroll");
+      const table = h("table", "video-table");
+      const hr = h("tr");
+      ["#", "Topic", "Client", "Edited by", "Posted on", "Posted at"].forEach((t) => hr.append(h("th", "", t)));
+      const thead = h("thead");
+      thead.append(hr);
+      const tbody = h("tbody");
+      posted.forEach((v, i) => {
+        const tr = h("tr");
+        const where = h("td");
+        const tags = h("div", "post-tags");
+        v.platforms.forEach((k) => tags.append(h("span", "post-tag post-" + k, platformNames([k]))));
+        where.append(tags);
+        const when = h("td", "video-sub", dayDate(v.posted_at.slice(0, 10)) + ", " + formatClock(v.posted_at.slice(11)));
+        when.title = "Recorded when " + (v.posted_by || "") + " clicked Posted (locked)";
+        tr.append(h("td", "num", i + 1), h("td", "video-topic", v.topic), h("td", "", v.shoot.client), h("td", "", v.editor || "—"), where, when);
+        tbody.append(tr);
+      });
+      table.append(thead, tbody);
+      scroll.append(table);
+      blocks.push(scroll);
+    }
+    el.videoPosted.replaceChildren(...blocks);
   }
 
   function approvalText(v) {
@@ -1654,8 +1767,9 @@
           ed.textContent = v.editor || "—";
         }
         const st = h("td");
-        st.append(h("span", "pill status-" + VIDEO_PILL[v.status], VIDEO_STATUS[v.status]));
-        const ap = h("td", "video-sub", approvalText(v) || "—");
+        if (v.posted_at) st.append(h("span", "pill status-done", "Posted"));
+        else st.append(h("span", "pill status-" + VIDEO_PILL[v.status], v.status === "approved" ? "Approved · to post" : VIDEO_STATUS[v.status]));
+        const ap = h("td", "video-sub", (approvalText(v) || "—") + (v.posted_at ? " · posted on " + platformNames(v.platforms) + ", " + dayDate(v.posted_at.slice(0, 10)) : ""));
         const act = h("td", "actions");
         const tools = h("div", "video-actions");
         if (!isAdmin() && me.name === v.editor && ["assigned", "editing", "changes"].includes(v.status)) {
@@ -1993,7 +2107,8 @@
       weekly: listFor(active, "weekly"),
       monthly: listFor(active, "monthly"),
     };
-    const views = !isAdmin() && inVideoTeam() ? [...VIEWS, { key: "videos", label: "Videos" }] : VIEWS;
+    const videosTab = isAdmin() ? isVideoMember(active) : inVideoTeam();
+    const views = videosTab ? [...VIEWS, { key: "videos", label: "Videos" }] : VIEWS;
     el.subtabs.replaceChildren(
       ...views.map(({ key, label }) => {
         const btn = h("button", "subtab subtab-" + key);
@@ -2011,8 +2126,8 @@
           const n = dueReminders(active).length;
           if (n) btn.append(h("span", "tab-count count-warn", n));
         } else if (key === "videos") {
-          const w = myVideoWork();
-          const n = w.edit.length + w.approve.length;
+          const w = myVideoWork(active);
+          const n = w.edit.length + w.approve.length + w.post.length;
           if (n) btn.append(h("span", "tab-count count-warn", n));
         }
         btn.addEventListener("click", () => setView(key));
@@ -3511,6 +3626,7 @@
 
   function render() {
     if (!me) return;
+    if (isAdmin() && isPersonTab() && view === "videos" && !isVideoMember(active)) view = "daily";
     renderDate();
     // Don't rebuild the table under someone who is mid-edit in a field;
     // catch up once they leave it.
