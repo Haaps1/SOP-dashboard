@@ -526,6 +526,7 @@
       removeVideo: (id) => call("removeVideo", { id }),
       assignVideo: (id, editor) => call("assignVideo", { id, editor }),
       startVideo: (id) => call("startVideo", { id }),
+      pauseVideo: (id) => call("pauseVideo", { id }),
       submitVideo: (id) => call("submitVideo", { id }),
       reviewVideo: (id, decision, comment) => call("reviewVideo", { id, decision, comment }),
       setPositions: (updates) => call("setPositions", { updates }),
@@ -1053,6 +1054,7 @@
     newUserPassword: $("new-user-password"),
     tasksPanel: $("tasks-panel"),
     videoHint: $("video-hint"),
+    dailyVideos: $("daily-videos"),
     videosPanel: $("videos-panel"),
     videoSummary: $("video-summary"),
     videoMine: $("video-mine"),
@@ -1313,11 +1315,107 @@
     await loadShoots();
   }
 
+  const EDITING = ["assigned", "editing", "changes"];
+  const videoRunning = (v) => v.status === "editing" && Boolean(v.resumed_at);
+  const videoPaused = (v) => v.status === "editing" && !v.resumed_at;
+
+  function videoMinutes(v) {
+    if (v.worked_sec == null) return null;
+    let sec = v.worked_sec;
+    if (v.resumed_at) sec += Math.max(0, (new Date() - atTime(...v.resumed_at.split(" "))) / 1000);
+    return Math.round(sec / 60);
+  }
+
+  // Videos someone sent for approval today
+  // (sent back for changes doesn't count).
+  const videosDoneToday = (name) =>
+    allVideos().filter((v) => v.editor === name && v.status !== "changes" && v.submitted_at && v.submitted_at.slice(0, 10) === todayStr);
+
+  function videoState(v) {
+    if (v.status === "changes") return ["overdue", "Needs changes"];
+    if (videoRunning(v)) return ["in_progress", "Editing"];
+    if (videoPaused(v)) return ["paused", "Paused"];
+    return ["todo", "To edit"];
+  }
+
+  function videoButtons(v) {
+    const out = [];
+    if (v.status === "assigned" || v.status === "changes" || videoPaused(v)) {
+      const label = v.status === "assigned" && v.worked_sec == null ? "Start" : "Resume";
+      out.push(videoButton(label, "btn-stamp " + (label === "Start" ? "btn-stamp-start" : "btn-stamp-resume"), () => videoAction(() => store.startVideo(v.id))));
+    }
+    if (videoRunning(v)) out.push(videoButton("Pause", "btn-stamp btn-stamp-pause", () => videoAction(() => store.pauseVideo(v.id))));
+    out.push(
+      videoButton("Send for approval", "btn-stamp btn-stamp-end", () =>
+        videoAction(() => store.submitVideo(v.id), "Sent “" + v.topic + "” to " + v.approvers.join(" and ") + " for approval.")
+      )
+    );
+    return out;
+  }
+
+  // Daily tab: the videos this person is editing. They stay here (no daily
+  // reset, never Pending) until sent for approval, and come back if changes
+  // are asked for.
+  function renderDailyVideos() {
+    const name = active;
+    const show = view === "daily" && isToday() && videoTeam && videoTeam.editors.includes(name);
+    el.dailyVideos.hidden = !show;
+    if (!show) return;
+    const list = allVideos().filter((v) => v.editor === name && EDITING.includes(v.status));
+    const doneToday = videosDoneToday(name).length;
+    const canAct = isAdmin() || me.name === name;
+    const head = h("div", "daily-videos-head");
+    head.append(h("h3", "video-h", "Videos to edit (" + list.length + ")"));
+    const chip = h("div", "summary-chip status-done");
+    chip.append(h("strong", "", doneToday), h("span", "", doneToday === 1 ? "video done today" : "videos done today"));
+    head.append(chip);
+    const blocks = [head];
+    if (!list.length) {
+      blocks.push(h("p", "video-empty", "No videos waiting to be edited."));
+    } else {
+      const scroll = h("div", "table-scroll table-scroll-tasks");
+      const table = h("table", "tasks");
+      const tbody = h("tbody");
+      list.forEach((v, i) => {
+        const tr = h("tr");
+        const title = h("td", "title");
+        title.append(h("span", "", v.topic), h("span", "task-due", v.shoot.client + " · shot " + dayDate(v.shoot.shoot_date)));
+        if (v.status === "changes" && v.note) title.append(h("span", "video-note", "Needs changes — " + v.note));
+        const start = h("td", "time-cell");
+        start.dataset.label = "Start";
+        const sw = h("div", "time-wrap");
+        if (v.started_at) {
+          sw.append(h("span", "time-value", formatClock(v.started_at.slice(11))));
+          if (v.started_at.slice(0, 10) !== todayStr) sw.append(h("span", "time-day", dayDate(v.started_at.slice(0, 10))));
+        } else sw.append(h("span", "time-none", "—"));
+        start.append(sw);
+        const actions = h("td", "time-cell");
+        actions.dataset.label = "Edit";
+        const aw = h("div", "time-wrap");
+        if (canAct) aw.append(...videoButtons(v));
+        actions.append(aw);
+        const [pill, label] = videoState(v);
+        const st = h("td", "status-cell");
+        st.append(h("span", "pill status-" + pill, label));
+        const taken = h("td", "taken-cell");
+        taken.dataset.label = "Taken";
+        const mins = videoMinutes(v);
+        taken.textContent = mins == null ? "—" : formatDuration(mins) + (videoRunning(v) ? " so far" : "");
+        if (videoRunning(v)) taken.classList.add("taken-running");
+        tr.append(h("td", "num", i + 1), title, start, actions, st, taken, h("td", "actions"));
+        tbody.append(tr);
+      });
+      table.append(tbody);
+      scroll.append(table);
+      blocks.push(scroll);
+    }
+    el.dailyVideos.replaceChildren(...blocks);
+  }
+
   // On the Daily tab: a reminder of videos waiting for you.
   function renderVideoHint(person) {
     const w = person && view === "daily" && isToday() ? myVideoWork() : { edit: [], approve: [] };
     const bits = [];
-    if (w.edit.length) bits.push(w.edit.length + (w.edit.length === 1 ? " video" : " videos") + " to edit");
     if (w.approve.length) bits.push(w.approve.length + (w.approve.length === 1 ? " video" : " videos") + " to approve");
     el.videoHint.hidden = !bits.length;
     el.videoHint.textContent = bits.length ? "Doctor videos: " + bits.join(" · ") + " — open Videos ›" : "";
@@ -1360,6 +1458,7 @@
       chip(vids.filter((v) => ["assigned", "editing", "changes"].includes(v.status)).length, "Being edited", "status-in_progress"),
       chip(vids.filter((v) => v.status === "review").length, "Waiting for approval", "status-todo"),
       chip(approved.length, "Approved this month", "status-done"),
+      ...videoTeam.editors.map((ed) => chip(videosDoneToday(ed).length, "Done today by " + ed)),
       ...videoTeam.editors.map((ed) => chip(approved.filter((v) => v.editor === ed).length, "Approved, edited by " + ed))
     );
   }
@@ -1429,13 +1528,10 @@
         card.append(videoLine(v));
         if (v.status === "changes" && v.note) card.append(h("span", "video-note", "Needs changes — " + v.note));
         const actions = h("div", "video-actions");
-        actions.append(h("span", "pill status-" + VIDEO_PILL[v.status], VIDEO_STATUS[v.status]));
-        if (v.status === "assigned") actions.append(videoButton("Start editing", "btn-stamp btn-stamp-start", () => videoAction(() => store.startVideo(v.id))));
-        actions.append(
-          videoButton("Editing done · send for approval", "btn-stamp btn-stamp-end", () =>
-            videoAction(() => store.submitVideo(v.id), "Sent “" + v.topic + "” to " + v.approvers.join(" and ") + " for approval.")
-          )
-        );
+        const [pill, label] = videoState(v);
+        actions.append(h("span", "pill status-" + pill, label), ...videoButtons(v));
+        const mins = videoMinutes(v);
+        if (mins != null) actions.append(h("span", "video-sub", formatDuration(mins) + " worked"));
         card.append(actions);
         blocks.push(card);
       }
@@ -1563,7 +1659,7 @@
         const act = h("td", "actions");
         const tools = h("div", "video-actions");
         if (!isAdmin() && me.name === v.editor && ["assigned", "editing", "changes"].includes(v.status)) {
-          tools.append(videoButton("Editing done", "btn-stamp btn-stamp-end", () => videoAction(() => store.submitVideo(v.id), "Sent for approval.")));
+          tools.append(videoButton("Send for approval", "btn-stamp btn-stamp-end", () => videoAction(() => store.submitVideo(v.id), "Sent for approval.")));
         }
         if (canShoot()) {
           const rm = videoButton("Remove", "btn-link btn-danger", () => {
@@ -1820,10 +1916,13 @@
   setInterval(renderClock, 10 * 1000);
 
   function renderDoneCounter(list) {
-    const noun = isPersonTab() && view === "daily" && DONE_COUNTERS[active];
+    // Video editors also count the videos they sent for approval today.
+    const editor = Boolean(videoTeam && videoTeam.editors.includes(active));
+    const noun = isPersonTab() && view === "daily" && (DONE_COUNTERS[active] || (editor && "videos"));
     el.doneCounter.hidden = !noun;
     if (!noun) return;
-    const n = h("strong", "", quantityTotal(list));
+    const sent = editor && isToday() ? videosDoneToday(active).length : 0;
+    const n = h("strong", "", quantityTotal(list) + sent);
     const label = h("span", "done-label", noun + " done " + (isToday() ? "today" : "on this day"));
     const cs = countStatuses(list);
     const sub = h("span", "done-sub", cs.done + " / " + cs.total + " tasks finished");
@@ -3434,6 +3533,7 @@
     el.remindersPanel.hidden = !person || view !== "reminders";
     el.notesPanel.hidden = !person || view === "videos";
     el.videosPanel.hidden = !showingVideos();
+    if (!person || view !== "daily") el.dailyVideos.hidden = true;
     renderVideoHint(person);
 
     el.pageTitle.textContent = isAdmin() ? "Team SOP Dashboard" : me.name + "’s Tasks";
@@ -3456,6 +3556,7 @@
     el.qtyHead.hidden = !countsItems();
     if (countsItems()) el.qtyHead.textContent = capitalize(DONE_COUNTERS[active]) + " Done";
     renderRows(list);
+    renderDailyVideos();
     el.addForm.hidden = false;
     el.addDue.hidden = true;
     el.addDays.hidden = view === "daily";

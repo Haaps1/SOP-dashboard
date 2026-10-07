@@ -27,7 +27,7 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 // weekdays = set days of the week; due_day is then a bitmask (Mon = 1, Tue = 2,
 // Wed = 4 ... Sun = 64) and the task is part of the daily list on those days.
 // monthdays = set dates of the month; due_day is a bitmask of dates (1st = 1,
@@ -334,6 +334,9 @@ function ensure_schema(PDO $db): void
         PRIMARY KEY (video_id, approver),
         CONSTRAINT video_reviews_video FOREIGN KEY (video_id) REFERENCES videos (id) ON DELETE CASCADE
     ) $opts");
+    // v10: editing time on videos (Start / Pause / Resume, like tasks).
+    add_column($db, 'videos', 'worked_sec', 'INT UNSIGNED NULL');
+    add_column($db, 'videos', 'resumed_at', 'DATETIME NULL');
     $db->exec("CREATE TABLE IF NOT EXISTS task_skips (
         task_id CHAR(36) NOT NULL,
         from_date DATE NOT NULL,
@@ -1346,7 +1349,7 @@ switch ($action) {
         if ($shoots) {
             $ids = array_keys($byId);
             $in = implode(',', array_fill(0, count($ids), '?'));
-            $q = $db->prepare("SELECT id, shoot_id, topic, position, editor, status, started_at, submitted_at, approved_at, rounds, note
+            $q = $db->prepare("SELECT id, shoot_id, topic, position, editor, status, started_at, submitted_at, approved_at, rounds, note, worked_sec, resumed_at
                                FROM videos WHERE shoot_id IN ($in) ORDER BY position, created_at");
             $q->execute($ids);
             $videos = $q->fetchAll();
@@ -1362,6 +1365,7 @@ switch ($action) {
             foreach ($videos as $v) {
                 $v['position'] = (int) $v['position'];
                 $v['rounds'] = (int) $v['rounds'];
+                $v['worked_sec'] = $v['worked_sec'] === null ? null : (int) $v['worked_sec'];
                 $v['reviews'] = $reviews[$v['id']] ?? [];
                 $v['approvers'] = $v['editor'] !== null ? video_approvers($v['editor']) : [];
                 $shoots[$byId[$v['shoot_id']]]['videos'][] = $v;
@@ -1444,14 +1448,16 @@ switch ($action) {
         if ($v['status'] === 'approved') {
             fail('This video is already approved.');
         }
-        $db->prepare("UPDATE videos SET editor = ?, status = ?, started_at = NULL, submitted_at = NULL, note = NULL WHERE id = ?")
+        $db->prepare("UPDATE videos SET editor = ?, status = ?, started_at = NULL, submitted_at = NULL, note = NULL, worked_sec = NULL, resumed_at = NULL WHERE id = ?")
             ->execute([$editor, $editor === null ? 'raw' : 'assigned', $v['id']]);
         $db->prepare('DELETE FROM video_reviews WHERE video_id = ?')->execute([$v['id']]);
         respond(200, ['data' => true]);
 
     case 'startVideo':
+    case 'pauseVideo':
     case 'submitVideo':
-        // The editor starts editing, then sends the video for approval.
+        // The editor starts (or resumes) editing, can pause, then sends the
+        // video for approval. Time is kept across days; it never resets.
         $v = load_video($db, id_param($input, 'id'));
         if (!$isAdmin && $me !== $v['editor']) {
             fail('Only ' . ($v['editor'] ?? 'the editor') . ' can do that.', 403);
@@ -1459,10 +1465,15 @@ switch ($action) {
         if (!in_array($v['status'], ['assigned', 'editing', 'changes'], true)) {
             fail('This video is not waiting for editing.', 409);
         }
+        $running = "COALESCE(worked_sec, 0) + IF(resumed_at IS NULL, 0, GREATEST(0, TIMESTAMPDIFF(SECOND, resumed_at, NOW())))";
         if ($action === 'startVideo') {
-            $db->prepare("UPDATE videos SET status = 'editing', started_at = COALESCE(started_at, NOW()) WHERE id = ?")->execute([$v['id']]);
+            $db->prepare("UPDATE videos SET status = 'editing', started_at = COALESCE(started_at, NOW()), worked_sec = COALESCE(worked_sec, 0),
+                          resumed_at = COALESCE(resumed_at, NOW()) WHERE id = ?")->execute([$v['id']]);
+        } elseif ($action === 'pauseVideo') {
+            $db->prepare("UPDATE videos SET worked_sec = $running, resumed_at = NULL WHERE id = ?")->execute([$v['id']]);
         } else {
-            $db->prepare("UPDATE videos SET status = 'review', started_at = COALESCE(started_at, NOW()), submitted_at = NOW(), rounds = rounds + 1 WHERE id = ?")
+            $db->prepare("UPDATE videos SET status = 'review', started_at = COALESCE(started_at, NOW()), worked_sec = $running, resumed_at = NULL,
+                          submitted_at = NOW(), rounds = rounds + 1 WHERE id = ?")
                 ->execute([$v['id']]);
             $db->prepare('DELETE FROM video_reviews WHERE video_id = ?')->execute([$v['id']]);
         }

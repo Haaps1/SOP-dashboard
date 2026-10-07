@@ -934,3 +934,7 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
   background: var(--surface-2); color: var(--text); color-scheme: dark; border: 1px solid var(--border);
   border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 13px;
 }
+.daily-videos { margin-top: 22px; padding-top: 6px; border-top: 1px solid var(--border); }
+.daily-videos-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0 6px; }
+.daily-videos-head .video-h { margin: 0; }
+.daily-videos .title .video-note { display: block; margin-top: 2px; font-weight: 400; }
