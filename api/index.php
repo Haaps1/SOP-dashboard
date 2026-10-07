@@ -27,7 +27,7 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 // weekdays = set days of the week; due_day is then a bitmask (Mon = 1, Tue = 2,
 // Wed = 4 ... Sun = 64) and the task is part of the daily list on those days.
 // monthdays = set dates of the month; due_day is a bitmask of dates (1st = 1,
@@ -77,6 +77,10 @@ if (!is_string($config['admin_password'] ?? null) || $config['admin_password'] =
 }
 // The admin's username; optional 'admin_username' in config.php, default "admin".
 define('ADMIN_USERNAME', is_string($config['admin_username'] ?? null) && trim($config['admin_username']) !== '' ? trim($config['admin_username']) : 'admin');
+// Doctor videos: who shoots, who edits, who reviews (optional in config.php).
+define('VIDEO_SHOOTER', is_string($config['video_shooter'] ?? null) ? $config['video_shooter'] : 'Harsha');
+define('VIDEO_EDITORS', is_array($config['video_editors'] ?? null) ? array_values($config['video_editors']) : ['Harsha', 'Manju Designer']);
+define('VIDEO_REVIEWER', is_string($config['video_reviewer'] ?? null) ? $config['video_reviewer'] : 'Madhu');
 date_default_timezone_set($config['timezone'] ?? 'Asia/Kolkata');
 // Sign people out after this many minutes without any activity (mouse,
 // keyboard or touch in the page; the dashboard's background checks for
@@ -295,6 +299,41 @@ function ensure_schema(PDO $db): void
     add_column($db, 'users', 'username', 'VARCHAR(100) NULL');
     add_column($db, 'tasks', 'state', 'VARCHAR(12) NULL');
     add_column($db, 'tasks', 'state_on', 'DATE NULL');
+    // v9: doctor video shoots, the videos from each shoot, and approvals.
+    $db->exec("CREATE TABLE IF NOT EXISTS video_shoots (
+        id CHAR(36) NOT NULL PRIMARY KEY,
+        client VARCHAR(200) NOT NULL,
+        shoot_date DATE NOT NULL,
+        raw_count INT UNSIGNED NOT NULL DEFAULT 0,
+        created_by VARCHAR(100) NOT NULL,
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        KEY video_shoots_date (shoot_date)
+    ) $opts");
+    $db->exec("CREATE TABLE IF NOT EXISTS videos (
+        id CHAR(36) NOT NULL PRIMARY KEY,
+        shoot_id CHAR(36) NOT NULL,
+        topic VARCHAR(300) NOT NULL,
+        position INT NOT NULL DEFAULT 0,
+        editor VARCHAR(100) NULL,
+        status VARCHAR(12) NOT NULL DEFAULT 'raw',
+        started_at DATETIME NULL,
+        submitted_at DATETIME NULL,
+        approved_at DATETIME NULL,
+        rounds INT UNSIGNED NOT NULL DEFAULT 0,
+        note TEXT NULL,
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        KEY videos_shoot (shoot_id, position),
+        CONSTRAINT videos_shoot FOREIGN KEY (shoot_id) REFERENCES video_shoots (id) ON DELETE CASCADE
+    ) $opts");
+    $db->exec("CREATE TABLE IF NOT EXISTS video_reviews (
+        video_id CHAR(36) NOT NULL,
+        approver VARCHAR(100) NOT NULL,
+        decision VARCHAR(10) NOT NULL,
+        comment TEXT NULL,
+        decided_at DATETIME NOT NULL,
+        PRIMARY KEY (video_id, approver),
+        CONSTRAINT video_reviews_video FOREIGN KEY (video_id) REFERENCES videos (id) ON DELETE CASCADE
+    ) $opts");
     $db->exec("CREATE TABLE IF NOT EXISTS task_skips (
         task_id CHAR(36) NOT NULL,
         from_date DATE NOT NULL,
@@ -559,6 +598,7 @@ function session_payload(PDO $db, ?array $s): array
         'today' => date('Y-m-d'),
         'tracking_start' => $user ? (meta($db, 'tracking_start') ?? date('Y-m-d')) : null,
         'admin_username' => $user && $user['role'] === 'admin' ? admin_username($db) : null,
+        'video' => $user ? ['shooter' => VIDEO_SHOOTER, 'editors' => VIDEO_EDITORS, 'reviewer' => VIDEO_REVIEWER] : null,
     ];
 }
 
@@ -783,6 +823,59 @@ function require_own_task(PDO $db, bool $isAdmin, ?string $me, string $taskId): 
         fail('That task belongs to someone else.', 403);
     }
     return $t;
+}
+
+// ---- Doctor videos --------------------------------------------------------
+// The shooter adds shoots and topics and assigns editing to one of the
+// editors. An edited video needs approval from the reviewer and the other
+// editor (both). Names can be changed in config.php.
+
+function video_approvers(string $editor): array
+{
+    $others = array_filter(VIDEO_EDITORS, fn($e) => $e !== $editor);
+    return array_values(array_unique(array_merge([VIDEO_REVIEWER], $others)));
+}
+
+function video_team_member(bool $isAdmin, ?string $me): bool
+{
+    return $isAdmin || in_array($me, array_merge([VIDEO_SHOOTER, VIDEO_REVIEWER], VIDEO_EDITORS), true);
+}
+
+function require_shooter(bool $isAdmin, ?string $me): void
+{
+    if (!$isAdmin && $me !== VIDEO_SHOOTER) {
+        fail('Only ' . VIDEO_SHOOTER . ' or the admin can do that.', 403);
+    }
+}
+
+function load_video(PDO $db, string $id): array
+{
+    $q = $db->prepare('SELECT * FROM videos WHERE id = ?');
+    $q->execute([$id]);
+    $v = $q->fetch();
+    if (!$v) {
+        fail('That video no longer exists.', 404);
+    }
+    return $v;
+}
+
+function topics_param(array $in): array
+{
+    $topics = $in['topics'] ?? [];
+    if (!is_array($topics) || count($topics) > 200) {
+        fail('Invalid topics.');
+    }
+    $out = [];
+    foreach ($topics as $t) {
+        if (!is_string($t)) {
+            fail('Invalid topics.');
+        }
+        $t = trim($t);
+        if ($t !== '') {
+            $out[] = mb_substr($t, 0, 300);
+        }
+    }
+    return $out;
 }
 
 function employee_exists(PDO $db, string $name): bool
@@ -1230,6 +1323,184 @@ switch ($action) {
         $name = str_param($input, 'name', 100);
         $db->prepare('UPDATE users SET active = 0 WHERE name = ?')->execute([$name]);
         respond(200, ['data' => user_list($db)]);
+
+    // ---- Doctor videos --------------------------------------------------------
+
+    case 'listShoots':
+        if (!video_team_member($isAdmin, $me)) {
+            fail('Videos are for the video team.', 403);
+        }
+        // Recent shoots, plus any older one with videos still in progress.
+        $q = $db->prepare("SELECT id, client, shoot_date, raw_count, created_by, created_at FROM video_shoots s
+                           WHERE shoot_date >= ? OR EXISTS (SELECT 1 FROM videos v WHERE v.shoot_id = s.id AND v.status <> 'approved')
+                           ORDER BY shoot_date DESC, created_at DESC");
+        $q->execute([date('Y-m-d', strtotime('-120 days'))]);
+        $shoots = $q->fetchAll();
+        $byId = [];
+        foreach ($shoots as $i => &$sh) {
+            $sh['raw_count'] = (int) $sh['raw_count'];
+            $sh['videos'] = [];
+            $byId[$sh['id']] = $i;
+        }
+        unset($sh);
+        if ($shoots) {
+            $ids = array_keys($byId);
+            $in = implode(',', array_fill(0, count($ids), '?'));
+            $q = $db->prepare("SELECT id, shoot_id, topic, position, editor, status, started_at, submitted_at, approved_at, rounds, note
+                               FROM videos WHERE shoot_id IN ($in) ORDER BY position, created_at");
+            $q->execute($ids);
+            $videos = $q->fetchAll();
+            $reviews = [];
+            if ($videos) {
+                $vin = implode(',', array_fill(0, count($videos), '?'));
+                $r = $db->prepare("SELECT video_id, approver, decision, comment, decided_at FROM video_reviews WHERE video_id IN ($vin)");
+                $r->execute(array_column($videos, 'id'));
+                foreach ($r->fetchAll() as $row) {
+                    $reviews[$row['video_id']][] = $row;
+                }
+            }
+            foreach ($videos as $v) {
+                $v['position'] = (int) $v['position'];
+                $v['rounds'] = (int) $v['rounds'];
+                $v['reviews'] = $reviews[$v['id']] ?? [];
+                $v['approvers'] = $v['editor'] !== null ? video_approvers($v['editor']) : [];
+                $shoots[$byId[$v['shoot_id']]]['videos'][] = $v;
+            }
+        }
+        respond(200, ['data' => $shoots]);
+
+    case 'addShoot':
+        require_shooter($isAdmin, $me);
+        $client = trim(str_param($input, 'client', 200));
+        if ($client === '') {
+            fail('Enter the client or doctor name.');
+        }
+        $raw = (int) ($input['raw_count'] ?? 0);
+        if ($raw < 0 || $raw > 1000) {
+            fail('Enter how many raw videos were shot.');
+        }
+        $topics = topics_param($input);
+        $id = uuid4();
+        $db->beginTransaction();
+        $db->prepare('INSERT INTO video_shoots (id, client, shoot_date, raw_count, created_by) VALUES (?, ?, ?, ?, ?)')
+            ->execute([$id, $client, date_param($input, 'shoot_date'), $raw, $isAdmin ? ADMIN_NAME : $me]);
+        $ins = $db->prepare('INSERT INTO videos (id, shoot_id, topic, position) VALUES (?, ?, ?, ?)');
+        foreach ($topics as $i => $t) {
+            $ins->execute([uuid4(), $id, $t, $i]);
+        }
+        $db->commit();
+        respond(200, ['data' => ['id' => $id]]);
+
+    case 'updateShoot':
+        require_shooter($isAdmin, $me);
+        $client = trim(str_param($input, 'client', 200));
+        $raw = (int) ($input['raw_count'] ?? 0);
+        if ($client === '' || $raw < 0 || $raw > 1000) {
+            fail('Check the client name and raw video count.');
+        }
+        $db->prepare('UPDATE video_shoots SET client = ?, shoot_date = ?, raw_count = ? WHERE id = ?')
+            ->execute([$client, date_param($input, 'shoot_date'), $raw, id_param($input, 'id')]);
+        respond(200, ['data' => true]);
+
+    case 'removeShoot':
+        require_shooter($isAdmin, $me);
+        $db->prepare('DELETE FROM video_shoots WHERE id = ?')->execute([id_param($input, 'id')]);
+        respond(200, ['data' => true]);
+
+    case 'addVideos':
+        require_shooter($isAdmin, $me);
+        $shootId = id_param($input, 'shoot_id');
+        $q = $db->prepare('SELECT COALESCE(MAX(position), -1) + 1 FROM videos WHERE shoot_id = ?');
+        $q->execute([$shootId]);
+        $pos = (int) $q->fetchColumn();
+        $ins = $db->prepare('INSERT INTO videos (id, shoot_id, topic, position) SELECT ?, id, ?, ? FROM video_shoots WHERE id = ?');
+        foreach (topics_param($input) as $t) {
+            $ins->execute([uuid4(), $t, $pos++, $shootId]);
+        }
+        respond(200, ['data' => true]);
+
+    case 'updateVideo':
+        require_shooter($isAdmin, $me);
+        $topic = trim(str_param($input, 'topic', 300));
+        if ($topic === '') {
+            fail('Enter the video topic.');
+        }
+        $db->prepare('UPDATE videos SET topic = ? WHERE id = ?')->execute([$topic, id_param($input, 'id')]);
+        respond(200, ['data' => true]);
+
+    case 'removeVideo':
+        require_shooter($isAdmin, $me);
+        $db->prepare('DELETE FROM videos WHERE id = ?')->execute([id_param($input, 'id')]);
+        respond(200, ['data' => true]);
+
+    case 'assignVideo':
+        // The shooter (or admin) picks who edits a video.
+        require_shooter($isAdmin, $me);
+        $v = load_video($db, id_param($input, 'id'));
+        $editor = $input['editor'] ?? null;
+        if ($editor !== null && !in_array($editor, VIDEO_EDITORS, true)) {
+            fail('Videos can be edited by ' . implode(' or ', VIDEO_EDITORS) . '.');
+        }
+        if ($v['status'] === 'approved') {
+            fail('This video is already approved.');
+        }
+        $db->prepare("UPDATE videos SET editor = ?, status = ?, started_at = NULL, submitted_at = NULL, note = NULL WHERE id = ?")
+            ->execute([$editor, $editor === null ? 'raw' : 'assigned', $v['id']]);
+        $db->prepare('DELETE FROM video_reviews WHERE video_id = ?')->execute([$v['id']]);
+        respond(200, ['data' => true]);
+
+    case 'startVideo':
+    case 'submitVideo':
+        // The editor starts editing, then sends the video for approval.
+        $v = load_video($db, id_param($input, 'id'));
+        if (!$isAdmin && $me !== $v['editor']) {
+            fail('Only ' . ($v['editor'] ?? 'the editor') . ' can do that.', 403);
+        }
+        if (!in_array($v['status'], ['assigned', 'editing', 'changes'], true)) {
+            fail('This video is not waiting for editing.', 409);
+        }
+        if ($action === 'startVideo') {
+            $db->prepare("UPDATE videos SET status = 'editing', started_at = COALESCE(started_at, NOW()) WHERE id = ?")->execute([$v['id']]);
+        } else {
+            $db->prepare("UPDATE videos SET status = 'review', started_at = COALESCE(started_at, NOW()), submitted_at = NOW(), rounds = rounds + 1 WHERE id = ?")
+                ->execute([$v['id']]);
+            $db->prepare('DELETE FROM video_reviews WHERE video_id = ?')->execute([$v['id']]);
+        }
+        respond(200, ['data' => true]);
+
+    case 'reviewVideo':
+        // Approvers: the reviewer and the other editor. Both must approve.
+        $v = load_video($db, id_param($input, 'id'));
+        if ($v['status'] !== 'review') {
+            fail('This video is not waiting for approval.', 409);
+        }
+        $approvers = video_approvers((string) $v['editor']);
+        if ($isAdmin || !in_array($me, $approvers, true)) {
+            fail('Only ' . implode(' and ', $approvers) . ' approve this video.', 403);
+        }
+        $decision = $input['decision'] ?? '';
+        if ($decision !== 'approved' && $decision !== 'changes') {
+            fail('Invalid decision.');
+        }
+        $comment = is_string($input['comment'] ?? null) ? trim(mb_substr($input['comment'], 0, 2000)) : '';
+        if ($decision === 'changes' && $comment === '') {
+            fail('Write what needs to change.');
+        }
+        $db->beginTransaction();
+        $db->prepare('INSERT INTO video_reviews (video_id, approver, decision, comment, decided_at) VALUES (?, ?, ?, ?, NOW())
+                      ON DUPLICATE KEY UPDATE decision = VALUES(decision), comment = VALUES(comment), decided_at = VALUES(decided_at)')
+            ->execute([$v['id'], $me, $decision, $comment === '' ? null : $comment]);
+        if ($decision === 'changes') {
+            $db->prepare("UPDATE videos SET status = 'changes', note = ? WHERE id = ?")->execute([$me . ': ' . $comment, $v['id']]);
+        } else {
+            $q = $db->prepare("SELECT approver FROM video_reviews WHERE video_id = ? AND decision = 'approved'");
+            $q->execute([$v['id']]);
+            if (!array_diff($approvers, $q->fetchAll(PDO::FETCH_COLUMN))) {
+                $db->prepare("UPDATE videos SET status = 'approved', approved_at = NOW(), note = NULL WHERE id = ?")->execute([$v['id']]);
+            }
+        }
+        $db->commit();
+        respond(200, ['data' => true]);
 
     // ---- Reminders ------------------------------------------------------------
 

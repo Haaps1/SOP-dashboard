@@ -351,6 +351,39 @@
       <!-- One person's tasks -->
       <nav id="subtabs" class="subtabs" role="tablist" aria-label="Task lists"></nav>
 
+      <button type="button" id="video-hint" class="video-hint" hidden></button>
+
+      <!-- Doctor videos: shoots, editing and approval -->
+      <section id="videos-panel" class="panel" hidden>
+        <div class="section-head"><h2>Doctor videos</h2></div>
+        <div id="video-summary" class="summary video-summary"></div>
+        <div id="video-mine" class="video-mine"></div>
+        <div id="shoot-new" class="shoot-new" hidden>
+          <h3 class="video-h">New shoot</h3>
+          <form id="shoot-form" class="assign-form shoot-form" autocomplete="off">
+            <label class="field field-grow">
+              <span>Client / doctor</span>
+              <input id="shoot-client" type="text" maxlength="200" placeholder="e.g. Dr. Varun Kumar J" required />
+            </label>
+            <label class="field">
+              <span>Shoot date</span>
+              <input id="shoot-date" type="date" required />
+            </label>
+            <label class="field">
+              <span>Raw videos</span>
+              <input id="shoot-raw" type="number" min="0" max="1000" value="0" required />
+            </label>
+            <label class="field shoot-topics">
+              <span>Video topics (one per line)</span>
+              <textarea id="shoot-topics" rows="4" placeholder="Knee pain: causes and treatment&#10;Laser hair removal: common questions"></textarea>
+            </label>
+            <button type="submit" class="btn-primary">Add shoot</button>
+          </form>
+        </div>
+        <h3 class="video-h">Shoots</h3>
+        <div id="shoot-list" class="shoot-list"></div>
+      </section>
+
       <section id="tasks-panel" class="panel">
         <p id="period-line" class="period-line" hidden></p>
         <div id="spotlight" class="spotlight" aria-live="polite" hidden></div>

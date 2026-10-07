@@ -883,3 +883,54 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
   .edit-row td { padding: 12px 0; }
   .add-form { flex-wrap: wrap; }
 }
+
+/* ---- Doctor videos ---- */
+.video-hint {
+  display: block; width: 100%; margin: 0 0 14px; padding: 12px 16px; text-align: left;
+  background: var(--progress-bg); color: var(--progress); border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer;
+}
+.video-hint:hover { border-color: var(--progress); }
+.video-summary { margin-bottom: 16px; flex-wrap: wrap; }
+.video-h { font-size: 15px; margin: 18px 0 10px; color: var(--text); }
+.video-mine { display: flex; flex-direction: column; gap: 10px; }
+.video-card {
+  display: flex; flex-direction: column; gap: 6px; padding: 12px 14px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+}
+.video-line { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.video-line strong { overflow-wrap: anywhere; }
+.video-sub { color: var(--muted); font-size: 13px; }
+.video-note { color: var(--todo); font-size: 13px; overflow-wrap: anywhere; }
+.video-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.video-review, .shoot-add, .shoot-edit { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.video-review input, .shoot-add input, .shoot-edit input {
+  flex: 1 1 200px; min-width: 0; background: var(--bg); color: var(--text); color-scheme: dark;
+  border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; font: inherit; font-size: 14px;
+}
+.shoot-edit input[type="date"], .shoot-edit input[type="number"] { flex: 0 1 150px; }
+.video-empty { color: var(--muted); margin: 4px 0; }
+.shoot-new { margin-top: 6px; }
+.shoot-topics { flex: 1 1 100%; }
+.field textarea {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+  padding: 9px 12px; font: inherit; font-size: 14px; resize: vertical; min-height: 80px; color-scheme: dark;
+}
+.field textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.shoot-list { display: flex; flex-direction: column; gap: 14px; }
+.shoot { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: var(--bg); }
+.shoot-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-bottom: 10px; }
+.shoot-title { display: flex; flex-direction: column; gap: 2px; flex: 1 1 220px; min-width: 0; }
+.shoot-title strong { font-size: 16px; overflow-wrap: anywhere; }
+.shoot-tools { display: flex; gap: 12px; }
+.video-table { width: 100%; border-collapse: collapse; }
+.video-table th { text-align: left; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 8px; border-bottom: 1px solid var(--border); }
+.video-table td { padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.video-table tr:last-child td { border-bottom: none; }
+.video-topic { min-width: 180px; }
+.video-topic > span { display: block; overflow-wrap: anywhere; }
+.video-topic .video-note { margin-top: 2px; }
+.video-table select {
+  background: var(--surface-2); color: var(--text); color-scheme: dark; border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 13px;
+}

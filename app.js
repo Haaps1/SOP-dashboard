@@ -85,6 +85,7 @@
   const OVERVIEW = "\u0000overview";
   const TEAM = "\u0000team";
   const REPORTS = "\u0000reports";
+  const VIDEOS = "\u0000videos";
   // "weekdays" tasks happen on set days of the week (due_day is a bitmask,
   // Monday = 1, Tuesday = 2, Wednesday = 4 ... Sunday = 64). On those days
   // they're part of the daily list; the weekly list shows the whole week.
@@ -516,6 +517,17 @@
       removeTask: (id) => call("removeTask", { id }),
       skipTask: (id, from, to) => call("skipTask", { id, from, to }),
       setTaskState: (id, state) => call("setTaskState", { id, state }),
+      listShoots: () => call("listShoots"),
+      addShoot: (shoot) => call("addShoot", shoot),
+      updateShoot: (shoot) => call("updateShoot", shoot),
+      removeShoot: (id) => call("removeShoot", { id }),
+      addVideos: (shootId, topics) => call("addVideos", { shoot_id: shootId, topics }),
+      updateVideo: (id, topic) => call("updateVideo", { id, topic }),
+      removeVideo: (id) => call("removeVideo", { id }),
+      assignVideo: (id, editor) => call("assignVideo", { id, editor }),
+      startVideo: (id) => call("startVideo", { id }),
+      submitVideo: (id) => call("submitVideo", { id }),
+      reviewVideo: (id, decision, comment) => call("reviewVideo", { id, decision, comment }),
       setPositions: (updates) => call("setPositions", { updates }),
       saveEntry: (taskId, date, times) => call("saveEntry", { task_id: taskId, date, ...times }),
       skipEntry: (taskId, date, skipped) => call("skipEntry", { task_id: taskId, date, skipped }),
@@ -859,6 +871,12 @@
         save();
         return publicUsers();
       },
+      async listShoots() {
+        return [];
+      },
+      async addShoot() {
+        throw apiError("Videos work on the online dashboard only.");
+      },
       async setTaskState(id, st) {
         requireAdmin();
         Object.assign(ownTask(id), { state: st, state_on: st ? today() : null });
@@ -1034,6 +1052,17 @@
     newUserName: $("new-user-name"),
     newUserPassword: $("new-user-password"),
     tasksPanel: $("tasks-panel"),
+    videoHint: $("video-hint"),
+    videosPanel: $("videos-panel"),
+    videoSummary: $("video-summary"),
+    videoMine: $("video-mine"),
+    shootNew: $("shoot-new"),
+    shootForm: $("shoot-form"),
+    shootClient: $("shoot-client"),
+    shootDate: $("shoot-date"),
+    shootRaw: $("shoot-raw"),
+    shootTopics: $("shoot-topics"),
+    shootList: $("shoot-list"),
     periodLine: $("period-line"),
     pendingPanel: $("pending-panel"),
     pendingRows: $("pending-rows"),
@@ -1103,7 +1132,7 @@
   let subscribed = false;
 
   const isAdmin = () => Boolean(me && me.role === "admin");
-  const isPersonTab = () => active !== OVERVIEW && active !== TEAM && active !== REPORTS;
+  const isPersonTab = () => active !== OVERVIEW && active !== TEAM && active !== REPORTS && active !== VIDEOS;
   const isTaskView = () => view === "daily" || view === "weekly" || view === "monthly";
 
   function isToday() {
@@ -1150,6 +1179,7 @@
     if (active === OVERVIEW) loadReport();
     if (active === TEAM) loadTeam();
     if (active === REPORTS) loadDetail();
+    if (active === VIDEOS) loadShoots();
   }
 
   function setView(v, silent) {
@@ -1230,7 +1260,372 @@
     reminders = rem;
     render();
     if (calendarOpen) loadCalendarDots();
+    if (inVideoTeam()) loadShoots();
   }
+
+  // ---- Doctor videos -----------------------------------------------------------
+  // The shooter adds shoots (client, date, raw videos, topics) and picks an
+  // editor for each video. The editor starts editing and sends it for
+  // approval; the reviewer and the other editor must both approve.
+
+  const VIDEO_STATUS = { raw: "Not assigned", assigned: "To edit", editing: "Editing", review: "Waiting for approval", changes: "Needs changes", approved: "Approved" };
+  const VIDEO_PILL = { raw: "todo", assigned: "todo", editing: "in_progress", review: "paused", changes: "overdue", approved: "done" };
+  let videoTeam = null; // { shooter, editors, reviewer }
+  let shoots = [];
+  let videosDirty = false;
+  let editingShootId = null;
+  let reviewOpenFor = null; // video id with the "Needs changes" box open
+
+  function inVideoTeam() {
+    return Boolean(me && videoTeam && (isAdmin() || [videoTeam.shooter, videoTeam.reviewer, ...videoTeam.editors].includes(me.name)));
+  }
+  const canShoot = () => Boolean(me && videoTeam && (isAdmin() || me.name === videoTeam.shooter));
+  const allVideos = () => shoots.flatMap((sh) => sh.videos.map((v) => ({ ...v, shoot: sh })));
+  const showingVideos = () => inVideoTeam() && (isAdmin() ? active === VIDEOS : isPersonTab() && view === "videos");
+
+  function myVideoWork() {
+    if (!me || isAdmin() || !videoTeam) return { edit: [], approve: [] };
+    const all = allVideos();
+    return {
+      edit: all.filter((v) => v.editor === me.name && ["assigned", "editing", "changes"].includes(v.status)),
+      approve: all.filter((v) => v.status === "review" && v.approvers.includes(me.name) && !v.reviews.some((r) => r.approver === me.name && r.decision === "approved")),
+    };
+  }
+
+  async function loadShoots() {
+    if (!inVideoTeam()) return;
+    try {
+      shoots = await store.listShoots();
+    } catch (e) {
+      if (!handleAuthError(e)) showToast("Couldn't load videos: " + e.message);
+      return;
+    }
+    render();
+  }
+
+  async function videoAction(fn, ok) {
+    try {
+      await fn();
+      if (ok) showToast(ok);
+    } catch (e) {
+      if (!handleAuthError(e)) showToast("Couldn't save: " + e.message);
+    }
+    await loadShoots();
+  }
+
+  // On the Daily tab: a reminder of videos waiting for you.
+  function renderVideoHint(person) {
+    const w = person && view === "daily" && isToday() ? myVideoWork() : { edit: [], approve: [] };
+    const bits = [];
+    if (w.edit.length) bits.push(w.edit.length + (w.edit.length === 1 ? " video" : " videos") + " to edit");
+    if (w.approve.length) bits.push(w.approve.length + (w.approve.length === 1 ? " video" : " videos") + " to approve");
+    el.videoHint.hidden = !bits.length;
+    el.videoHint.textContent = bits.length ? "Doctor videos: " + bits.join(" · ") + " — open Videos ›" : "";
+  }
+  el.videoHint.addEventListener("click", () => setView("videos"));
+
+  function renderVideos() {
+    const f = document.activeElement;
+    if (f && el.videosPanel.contains(f) && /^(INPUT|TEXTAREA|SELECT)$/.test(f.tagName) && !f.closest("#shoot-new")) {
+      videosDirty = true;
+      return;
+    }
+    videosDirty = false;
+    renderVideoSummary();
+    renderMyVideos();
+    el.shootNew.hidden = !canShoot();
+    if (!el.shootDate.value) el.shootDate.value = todayStr;
+    renderShoots();
+  }
+  el.videosPanel.addEventListener("focusout", () => {
+    setTimeout(() => {
+      const f = document.activeElement;
+      if (videosDirty && !(f && el.videosPanel.contains(f) && /^(INPUT|TEXTAREA|SELECT)$/.test(f.tagName))) renderVideos();
+    }, 1500);
+  });
+
+  function renderVideoSummary() {
+    const month = monthStart(todayStr);
+    const thisMonth = shoots.filter((sh) => sh.shoot_date >= month);
+    const vids = allVideos();
+    const approved = vids.filter((v) => v.approved_at && v.approved_at.slice(0, 10) >= month);
+    const chip = (n, label, cls) => {
+      const c = h("div", "summary-chip" + (cls ? " " + cls : ""));
+      c.append(h("strong", "", n), h("span", "", label));
+      return c;
+    };
+    el.videoSummary.replaceChildren(
+      chip(thisMonth.length, "Shoots this month"),
+      chip(thisMonth.reduce((n, sh) => n + sh.raw_count, 0), "Raw videos this month"),
+      chip(vids.filter((v) => ["assigned", "editing", "changes"].includes(v.status)).length, "Being edited", "status-in_progress"),
+      chip(vids.filter((v) => v.status === "review").length, "Waiting for approval", "status-todo"),
+      chip(approved.length, "Approved this month", "status-done"),
+      ...videoTeam.editors.map((ed) => chip(approved.filter((v) => v.editor === ed).length, "Approved, edited by " + ed))
+    );
+  }
+
+  function videoLine(v) {
+    const wrap = h("div", "video-line");
+    wrap.append(h("strong", "", v.topic), h("span", "video-sub", v.shoot.client + " · shot " + dayDate(v.shoot.shoot_date) + (v.editor ? " · edited by " + v.editor : "")));
+    return wrap;
+  }
+
+  function videoButton(label, cls, onClick) {
+    const b = h("button", cls, label);
+    b.type = "button";
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  // Your editing and your approvals, at the top for the people involved.
+  function renderMyVideos() {
+    if (isAdmin()) return el.videoMine.replaceChildren();
+    const w = myVideoWork();
+    const blocks = [];
+    if (w.approve.length) {
+      blocks.push(h("h3", "video-h", "To approve (" + w.approve.length + ")"));
+      for (const v of w.approve) {
+        const card = h("div", "video-card");
+        card.append(videoLine(v));
+        const others = v.approvers.filter((a) => a !== me.name);
+        const theirs = others.map((a) => a + (v.reviews.some((r) => r.approver === a && r.decision === "approved") ? " ✓" : ": waiting")).join(" · ");
+        if (theirs) card.append(h("span", "video-sub", "Also approving: " + theirs));
+        const actions = h("div", "video-actions");
+        actions.append(
+          videoButton("Approve", "btn-stamp btn-stamp-end", () => videoAction(() => store.reviewVideo(v.id, "approved", ""), "Approved “" + v.topic + "”.")),
+          videoButton("Needs changes", "btn-stamp btn-stamp-pause", () => {
+            reviewOpenFor = reviewOpenFor === v.id ? null : v.id;
+            renderVideos();
+          })
+        );
+        card.append(actions);
+        if (reviewOpenFor === v.id) {
+          const form = h("form", "video-review");
+          const input = document.createElement("input");
+          input.type = "text";
+          input.maxLength = 2000;
+          input.required = true;
+          input.placeholder = "What needs to change?";
+          input.setAttribute("aria-label", "What needs to change");
+          const send = h("button", "btn-secondary", "Send back to " + v.editor);
+          send.type = "submit";
+          form.append(input, send);
+          form.addEventListener("submit", (e) => {
+            e.preventDefault();
+            reviewOpenFor = null;
+            input.blur();
+            videoAction(() => store.reviewVideo(v.id, "changes", input.value.trim()), "Sent back to " + v.editor + ".");
+          });
+          card.append(form);
+          setTimeout(() => input.focus(), 0);
+        }
+        blocks.push(card);
+      }
+    }
+    if (w.edit.length) {
+      blocks.push(h("h3", "video-h", "To edit (" + w.edit.length + ")"));
+      for (const v of w.edit) {
+        const card = h("div", "video-card");
+        card.append(videoLine(v));
+        if (v.status === "changes" && v.note) card.append(h("span", "video-note", "Needs changes — " + v.note));
+        const actions = h("div", "video-actions");
+        actions.append(h("span", "pill status-" + VIDEO_PILL[v.status], VIDEO_STATUS[v.status]));
+        if (v.status === "assigned") actions.append(videoButton("Start editing", "btn-stamp btn-stamp-start", () => videoAction(() => store.startVideo(v.id))));
+        actions.append(
+          videoButton("Editing done · send for approval", "btn-stamp btn-stamp-end", () =>
+            videoAction(() => store.submitVideo(v.id), "Sent “" + v.topic + "” to " + v.approvers.join(" and ") + " for approval.")
+          )
+        );
+        card.append(actions);
+        blocks.push(card);
+      }
+    }
+    if (!blocks.length) blocks.push(h("p", "video-empty", "Nothing waiting for you right now."));
+    el.videoMine.replaceChildren(...blocks);
+  }
+
+  function approvalText(v) {
+    if (!v.editor || !["review", "approved", "changes"].includes(v.status)) return "";
+    return v.approvers
+      .map((a) => {
+        const r = v.reviews.find((x) => x.approver === a);
+        return a + (r ? (r.decision === "approved" ? " ✓" : " ✗") : v.status === "review" ? ": waiting" : "");
+      })
+      .join(" · ");
+  }
+
+  function renderShoots() {
+    if (!shoots.length) {
+      el.shootList.replaceChildren(h("p", "video-empty", canShoot() ? "No shoots yet. Add the first one above." : "No shoots yet."));
+      return;
+    }
+    el.shootList.replaceChildren(...shoots.map(shootCard));
+  }
+
+  function shootCard(sh) {
+    const card = h("div", "shoot");
+    const head = h("div", "shoot-head");
+    const done = sh.videos.filter((v) => v.status === "approved").length;
+    if (editingShootId === sh.id) {
+      const form = h("form", "shoot-edit");
+      const client = document.createElement("input");
+      client.type = "text";
+      client.value = sh.client;
+      client.maxLength = 200;
+      client.required = true;
+      client.setAttribute("aria-label", "Client / doctor");
+      const date = document.createElement("input");
+      date.type = "date";
+      date.value = sh.shoot_date;
+      date.required = true;
+      date.setAttribute("aria-label", "Shoot date");
+      const raw = document.createElement("input");
+      raw.type = "number";
+      raw.min = 0;
+      raw.max = 1000;
+      raw.value = sh.raw_count;
+      raw.setAttribute("aria-label", "Raw videos");
+      const save = h("button", "btn-secondary", "Save");
+      save.type = "submit";
+      const cancel = videoButton("Cancel", "btn-link", () => {
+        editingShootId = null;
+        renderVideos();
+      });
+      form.append(client, date, raw, save, cancel);
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        editingShootId = null;
+        document.activeElement.blur();
+        videoAction(() => store.updateShoot({ id: sh.id, client: client.value.trim(), shoot_date: date.value, raw_count: Number(raw.value) || 0 }), "Shoot updated.");
+      });
+      head.append(form);
+    } else {
+      const title = h("div", "shoot-title");
+      title.append(
+        h("strong", "", sh.client),
+        h("span", "video-sub", dayDate(sh.shoot_date) + " · " + sh.raw_count + " raw " + (sh.raw_count === 1 ? "video" : "videos") + " · " + sh.videos.length + (sh.videos.length === 1 ? " topic" : " topics"))
+      );
+      head.append(title, h("span", "pill " + (sh.videos.length && done === sh.videos.length ? "status-done" : "status-in_progress"), done + " of " + sh.videos.length + " approved"));
+      if (canShoot()) {
+        const tools = h("div", "shoot-tools");
+        tools.append(
+          videoButton("Edit", "btn-link", () => {
+            editingShootId = sh.id;
+            renderVideos();
+          })
+        );
+        const del = videoButton("Delete shoot", "btn-link btn-danger", () => {
+          if (!del.classList.contains("armed")) {
+            del.classList.add("armed");
+            del.textContent = "Delete this shoot and its videos?";
+            return;
+          }
+          videoAction(() => store.removeShoot(sh.id), "Shoot deleted.");
+        });
+        tools.append(del);
+        head.append(tools);
+      }
+    }
+    card.append(head);
+
+    if (sh.videos.length) {
+      const scroll = h("div", "table-scroll");
+      const table = h("table", "video-table");
+      const thead = h("thead");
+      const hr = h("tr");
+      ["#", "Topic", "Editor", "Status", "Approval", ""].forEach((t) => hr.append(h("th", "", t)));
+      thead.append(hr);
+      const tbody = h("tbody");
+      sh.videos.forEach((v0, i) => {
+        const v = { ...v0, shoot: sh };
+        const tr = h("tr");
+        const topic = h("td", "video-topic");
+        topic.append(h("span", "", v.topic));
+        if (v.status === "changes" && v.note) topic.append(h("span", "video-note", v.note));
+        const ed = h("td");
+        if (canShoot() && v.status !== "approved") {
+          const sel = document.createElement("select");
+          sel.setAttribute("aria-label", "Editor for " + v.topic);
+          sel.append(option("", "Choose editor…"), ...videoTeam.editors.map((n) => option(n, n)));
+          sel.value = v.editor || "";
+          sel.addEventListener("change", () => {
+            const editor = sel.value || null;
+            sel.blur();
+            videoAction(() => store.assignVideo(v.id, editor), editor ? "Assigned “" + v.topic + "” to " + editor + "." : "Editor removed.");
+          });
+          ed.append(sel);
+        } else {
+          ed.textContent = v.editor || "—";
+        }
+        const st = h("td");
+        st.append(h("span", "pill status-" + VIDEO_PILL[v.status], VIDEO_STATUS[v.status]));
+        const ap = h("td", "video-sub", approvalText(v) || "—");
+        const act = h("td", "actions");
+        const tools = h("div", "video-actions");
+        if (!isAdmin() && me.name === v.editor && ["assigned", "editing", "changes"].includes(v.status)) {
+          tools.append(videoButton("Editing done", "btn-stamp btn-stamp-end", () => videoAction(() => store.submitVideo(v.id), "Sent for approval.")));
+        }
+        if (canShoot()) {
+          const rm = videoButton("Remove", "btn-link btn-danger", () => {
+            if (!rm.classList.contains("armed")) {
+              rm.classList.add("armed");
+              rm.textContent = "Remove?";
+              return;
+            }
+            videoAction(() => store.removeVideo(v.id));
+          });
+          tools.append(rm);
+        }
+        act.append(tools);
+        tr.append(h("td", "num", i + 1), topic, ed, st, ap, act);
+        tbody.append(tr);
+      });
+      table.append(thead, tbody);
+      scroll.append(table);
+      card.append(scroll);
+    }
+
+    if (canShoot()) {
+      const add = h("form", "shoot-add");
+      const input = document.createElement("input");
+      input.type = "text";
+      input.maxLength = 300;
+      input.placeholder = "Add a video topic…";
+      input.setAttribute("aria-label", "New video topic for " + sh.client);
+      const btn = h("button", "btn-secondary", "Add topic");
+      btn.type = "submit";
+      add.append(input, btn);
+      add.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const t = input.value.trim();
+        if (!t) return;
+        input.value = "";
+        input.blur();
+        videoAction(() => store.addVideos(sh.id, [t]));
+      });
+      card.append(add);
+    }
+    return card;
+  }
+
+  el.shootForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const shoot = {
+      client: el.shootClient.value.trim(),
+      shoot_date: el.shootDate.value || todayStr,
+      raw_count: Number(el.shootRaw.value) || 0,
+      topics: el.shootTopics.value.split("\n").map((t) => t.trim()).filter(Boolean),
+    };
+    if (!shoot.client) return;
+    document.activeElement.blur();
+    videoAction(async () => {
+      await store.addShoot(shoot);
+      el.shootClient.value = "";
+      el.shootRaw.value = 0;
+      el.shootTopics.value = "";
+      el.shootDate.value = todayStr;
+    }, "Shoot added: " + shoot.client + " (" + shoot.topics.length + (shoot.topics.length === 1 ? " topic)" : " topics)") + ".");
+  });
 
   // Coalesce bursts of change notifications into one reload.
   let refreshTimer;
@@ -1485,6 +1880,7 @@
         const c = countStatuses(list);
         return tab(name, name, c.done + "/" + c.total, "", pendingFor(name).length || 0);
       }),
+      tab(VIDEOS, "Videos", undefined, "tab-admin", allVideos().filter((v) => v.status === "review").length || 0),
       tab(REPORTS, "Reports", undefined, "tab-admin"),
       tab(TEAM, "Team", undefined, "tab-admin")
     );
@@ -1498,8 +1894,9 @@
       weekly: listFor(active, "weekly"),
       monthly: listFor(active, "monthly"),
     };
+    const views = !isAdmin() && inVideoTeam() ? [...VIEWS, { key: "videos", label: "Videos" }] : VIEWS;
     el.subtabs.replaceChildren(
-      ...VIEWS.map(({ key, label }) => {
+      ...views.map(({ key, label }) => {
         const btn = h("button", "subtab subtab-" + key);
         btn.type = "button";
         btn.setAttribute("role", "tab");
@@ -1513,6 +1910,10 @@
           btn.append(h("span", "tab-count" + (n ? " count-alert" : ""), n));
         } else if (key === "reminders") {
           const n = dueReminders(active).length;
+          if (n) btn.append(h("span", "tab-count count-warn", n));
+        } else if (key === "videos") {
+          const w = myVideoWork();
+          const n = w.edit.length + w.approve.length;
           if (n) btn.append(h("span", "tab-count count-warn", n));
         }
         btn.addEventListener("click", () => setView(key));
@@ -3031,7 +3432,9 @@
     el.tasksPanel.hidden = !person || !isTaskView();
     el.pendingPanel.hidden = !person || view !== "pending";
     el.remindersPanel.hidden = !person || view !== "reminders";
-    el.notesPanel.hidden = !person;
+    el.notesPanel.hidden = !person || view === "videos";
+    el.videosPanel.hidden = !showingVideos();
+    renderVideoHint(person);
 
     el.pageTitle.textContent = isAdmin() ? "Team SOP Dashboard" : me.name + "’s Tasks";
 
@@ -3040,6 +3443,7 @@
     if (active === OVERVIEW) renderOverview();
     if (active === TEAM) renderTeam();
     if (active === REPORTS) renderDetailFilters();
+    if (showingVideos()) return renderVideos();
     if (!person) return;
 
     renderNotes();
@@ -3480,6 +3884,7 @@
     me = s.user;
     trackingStart = s.tracking_start || todayStr;
     if (s.admin_username) adminLoginName = s.admin_username;
+    videoTeam = s.video || null;
     el.auth.hidden = true;
     el.app.hidden = false;
     paintAvatar(el.userAvatar, me.name, isAdmin());
@@ -3509,8 +3914,8 @@
     reminders = [];
     noteShownFor = "";
     editingTaskId = null;
-    active = isAdmin() ? readPref("tab", (v) => v === OVERVIEW || v === TEAM || v === REPORTS || employees.includes(v), OVERVIEW) : employees[0];
-    view = readPref("view", (v) => VIEWS.some((x) => x.key === v), "daily");
+    active = isAdmin() ? readPref("tab", (v) => v === OVERVIEW || v === TEAM || v === REPORTS || v === VIDEOS || employees.includes(v), OVERVIEW) : employees[0];
+    view = readPref("view", (v) => VIEWS.some((x) => x.key === v) || (v === "videos" && inVideoTeam()), "daily");
     render();
     if (!subscribed) {
       store.subscribe(scheduleRefresh);
