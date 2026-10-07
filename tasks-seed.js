@@ -17,7 +17,7 @@
 //     the first 6 Monday-Friday days of the month (each Sat/Sun adds a day).
 //     It is in Daily Tasks on each of those days and keeps one record for the
 //     month (Start, Pause, Finish), and goes to Pending if not finished by then.
-window.SEED_VERSION = 5;
+window.SEED_VERSION = 6;
 
 window.EMPLOYEES = ["Anil", "Madhu", "Manju", "Harsha", "Manju Designer"];
 
@@ -32,6 +32,15 @@ window.DONE_COUNTERS = {
 };
 
 window.SEED_TASKS = {
+  Madhu: [
+    "Meta Ads - HLC",
+    "SEO - Dr. Varun Kumar J",
+    "SEO - KVA",
+    "SEO - Dr. Neema Bhat",
+    "GMB - Dr. Neema Bhat",
+    "Video Posting + thumbnails",
+    "Morning Social Media Posting",
+  ],
   Manju: [
     "SEO - MedFine",
     "SEO - HLC",
