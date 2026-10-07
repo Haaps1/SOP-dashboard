@@ -1067,6 +1067,7 @@
     shootRaw: $("shoot-raw"),
     shootTopics: $("shoot-topics"),
     shootList: $("shoot-list"),
+    shootsHead: $("shoots-head"),
     periodLine: $("period-line"),
     pendingPanel: $("pending-panel"),
     pendingRows: $("pending-rows"),
@@ -1449,7 +1450,11 @@
     renderPostedVideos();
     el.shootNew.hidden = !canShoot();
     if (!el.shootDate.value) el.shootDate.value = todayStr;
-    renderShoots();
+    // Shoots are for the shooter, the editors and the admin (not the poster).
+    const seesShoots = isAdmin() || canShoot() || videoTeam.editors.includes(me.name);
+    el.shootList.hidden = !seesShoots;
+    el.shootsHead.hidden = !seesShoots;
+    if (seesShoots) renderShoots();
   }
   el.videosPanel.addEventListener("focusout", () => {
     setTimeout(() => {
@@ -1501,10 +1506,7 @@
     const readOnly = isAdmin(); // the admin sees someone's lists; they act on them
     const w = myVideoWork(who);
     const blocks = [];
-    if (w.post.length) {
-      blocks.push(h("h3", "video-h", "Videos available to post (" + w.post.length + ")"));
-      for (const v of w.post) blocks.push(postCard(v, readOnly));
-    }
+    if (who === videoTeam.poster) blocks.push(...postTables(readOnly, w.post.length));
     if (w.approve.length) {
       blocks.push(h("h3", "video-h", "To approve (" + w.approve.length + ")"));
       for (const v of w.approve) {
@@ -1568,33 +1570,85 @@
     el.videoMine.replaceChildren(...blocks);
   }
 
-  // An approved video waiting to be posted: tick where, then Posted (stamped
-  // once with the date and time; it can't be changed after).
-  function postCard(v, readOnly) {
-    const card = h("div", "video-card");
-    card.append(videoLine(v));
-    if (v.approved_at) card.append(h("span", "video-sub", "Approved " + dayDate(v.approved_at.slice(0, 10)) + ", " + formatClock(v.approved_at.slice(11))));
+  // The poster's list: one table per client shoot and approval day, with
+  // Instagram / Facebook / YouTube ticks and Posted (stamped once; locked).
+  // Today it shows what's waiting plus what was posted today; another date
+  // shows what was posted that day.
+  function postTables(readOnly, waiting) {
+    const vids = allVideos().filter((v) =>
+      v.status === "approved" && (v.posted_at ? v.posted_at.slice(0, 10) === selectedDate : isToday())
+    );
+    const posted = vids.filter((v) => v.posted_at).length;
+    const title = isToday()
+      ? "Videos available to post (" + waiting + ")" + (posted ? " · posted today: " + posted : "")
+      : "Posted on " + dayDate(selectedDate) + " (" + posted + ")";
+    const blocks = [h("h3", "video-h", title)];
+    if (!vids.length) {
+      blocks.push(h("p", "video-empty", isToday() ? "No approved videos waiting to be posted." : "Nothing was posted that day."));
+      return blocks;
+    }
+    const groups = new Map();
+    for (const v of vids.sort((a, b) => (a.approved_at || "").localeCompare(b.approved_at || ""))) {
+      const key = v.shoot.id + "|" + (v.approved_at || "").slice(0, 10);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(v);
+    }
+    for (const list of groups.values()) {
+      const sh = list[0].shoot;
+      const box = h("div", "shoot post-group");
+      const head = h("div", "shoot-head");
+      const t = h("div", "shoot-title");
+      t.append(
+        h("strong", "", sh.client),
+        h("span", "video-sub", "Shot " + dayDate(sh.shoot_date) + " · Approved " + (list[0].approved_at ? dayDate(list[0].approved_at.slice(0, 10)) : "—"))
+      );
+      head.append(t);
+      box.append(head);
+      const scroll = h("div", "table-scroll");
+      const table = h("table", "video-table post-table");
+      const hr = h("tr");
+      ["Topic", "Editor", "Status", ...PLATFORMS.map((p) => p[1]), "Post status"].forEach((x) => hr.append(h("th", "", x)));
+      const thead = h("thead");
+      thead.append(hr);
+      const tbody = h("tbody");
+      for (const v of list) tbody.append(postRow(v, readOnly));
+      table.append(thead, tbody);
+      scroll.append(table);
+      box.append(scroll);
+      blocks.push(box);
+    }
+    return blocks;
+  }
+
+  function postRow(v, readOnly) {
+    const tr = h("tr");
+    const done = Boolean(v.posted_at);
+    const st = h("td");
+    st.append(h("span", "pill " + (done ? "status-done" : "status-in_progress"), done ? "Posted" : "Available to post"));
     const ticked = postChecks.get(v.id) || new Set();
-    const boxes = h("div", "post-checks");
-    for (const [key, label] of PLATFORMS) {
-      const wrap = h("label", "post-check");
+    const cells = PLATFORMS.map(([key, label]) => {
+      const td = h("td", "post-cell");
       const box = document.createElement("input");
       box.type = "checkbox";
-      box.checked = ticked.has(key);
-      box.disabled = readOnly;
+      box.setAttribute("aria-label", label + ": " + v.topic);
+      box.checked = done ? v.platforms.includes(key) : ticked.has(key);
+      box.disabled = done || readOnly;
       box.addEventListener("change", () => {
         const set = postChecks.get(v.id) || new Set();
         if (box.checked) set.add(key);
         else set.delete(key);
         postChecks.set(v.id, set);
       });
-      wrap.append(box, h("span", "", label));
-      boxes.append(wrap);
-    }
-    card.append(boxes);
-    if (!readOnly) {
-      const actions = h("div", "video-actions");
-      actions.append(
+      td.append(box);
+      return td;
+    });
+    const action = h("td", "post-status");
+    if (done) {
+      const when = h("span", "video-sub", dayDate(v.posted_at.slice(0, 10)) + ", " + formatClock(v.posted_at.slice(11)));
+      when.title = "Recorded when " + (v.posted_by || "") + " clicked Posted (locked)";
+      action.append(when);
+    } else if (!readOnly) {
+      action.append(
         videoButton("Posted", "btn-stamp btn-stamp-end", () => {
           const set = postChecks.get(v.id) || new Set();
           if (!set.size) return showToast("Tick where it was posted: Instagram, Facebook or YouTube.");
@@ -1605,16 +1659,18 @@
           }, "Marked “" + v.topic + "” as posted on " + platformNames(platforms) + ".");
         })
       );
-      card.append(actions);
+    } else {
+      action.append(h("span", "video-sub", "Not posted yet"));
     }
-    return card;
+    tr.append(h("td", "video-topic", v.topic), h("td", "", v.editor || "—"), st, ...cells, action);
+    return tr;
   }
 
   // The posting record: what was posted, where and when (for the poster and
   // the admin).
   function renderPostedVideos() {
     const who = videoWho();
-    const show = Boolean(videoTeam && (who ? who === videoTeam.poster : isAdmin()));
+    const show = Boolean(videoTeam && !who && isAdmin());
     el.videoPosted.hidden = !show;
     if (!show) return;
     // Only what was posted on the selected day (pick a date to look back).

@@ -951,3 +951,9 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 .post-facebook { color: #60a5fa; border-color: rgba(96, 165, 250, 0.4); }
 .post-youtube { color: #f87171; border-color: rgba(248, 113, 113, 0.4); }
 .video-posted { margin-top: 6px; }
+.post-group { margin-top: 10px; }
+.post-table .post-cell { text-align: center; width: 90px; }
+.post-table th:nth-child(4), .post-table th:nth-child(5), .post-table th:nth-child(6) { text-align: center; }
+.post-cell input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+.post-cell input:disabled { cursor: default; }
+.post-status { white-space: nowrap; }
