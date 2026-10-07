@@ -172,6 +172,14 @@
               <select id="assign-due"></select>
             </label>
             <label class="field">
+              <span>Repeat</span>
+              <select id="assign-repeat"></select>
+            </label>
+            <div class="field" id="assign-for-field">
+              <span>For how long</span>
+              <span class="for-wrap"><input id="assign-count" type="number" min="1" max="999" value="1" aria-label="How many" hidden /><select id="assign-unit" aria-label="Days, weeks or months"><option value="always">always</option><option value="days">days</option><option value="weeks">weeks</option><option value="months">months</option></select></span>
+            </div>
+            <label class="field">
               <span>Assign to</span>
               <select id="assign-to" required></select>
             </label>
@@ -358,6 +366,8 @@
           <input id="add-input" type="text" maxlength="200" placeholder="Add a task…" aria-label="New task title" />
           <select id="add-due" aria-label="Due on" hidden></select>
           <div id="add-days" class="day-picker" hidden></div>
+          <select id="add-repeat" aria-label="Repeat"></select>
+          <span id="add-for" class="for-wrap"><span class="for-label">for</span><input id="add-count" type="number" min="1" max="999" value="1" aria-label="How many" hidden /><select id="add-unit" aria-label="Days, weeks or months"><option value="always">always</option><option value="days">days</option><option value="weeks">weeks</option><option value="months">months</option></select></span>
           <button type="submit" class="btn-primary">Add Task</button>
         </form>
       </section>

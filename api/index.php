@@ -27,7 +27,7 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 // weekdays = set days of the week; due_day is then a bitmask (Mon = 1, Tue = 2,
 // Wed = 4 ... Sun = 64) and the task is part of the daily list on those days.
 // monthdays = set dates of the month; due_day is a bitmask of dates (1st = 1,
@@ -136,6 +136,23 @@ function date_param(array $in, string $key): string
         fail("Invalid $key.");
     }
     return $v;
+}
+
+// A task's active span: starts_on / ends_on dates, or null for open-ended.
+function span_params(array $in, ?array $current = null): array
+{
+    $get = function (string $key) use ($in, $current) {
+        if (!array_key_exists($key, $in)) {
+            return $current[$key] ?? null;
+        }
+        return $in[$key] === null || $in[$key] === '' ? null : date_param($in, $key);
+    };
+    $startsOn = $get('starts_on');
+    $endsOn = $get('ends_on');
+    if ($startsOn !== null && $endsOn !== null && $endsOn < $startsOn) {
+        fail('The last day must be after the first day.');
+    }
+    return [$startsOn, $endsOn];
 }
 
 function time_param(array $in, string $key): ?string
@@ -269,6 +286,17 @@ function ensure_schema(PDO $db): void
     // resumed_at is when the current stretch began (NULL while paused).
     add_column($db, 'task_entries', 'worked_sec', 'INT UNSIGNED NULL');
     add_column($db, 'task_entries', 'resumed_at', 'DATETIME NULL');
+    // v7: tasks for a set time (starts_on / ends_on, NULL = open), and
+    // "delete for now": the task is hidden from from_date to to_date.
+    add_column($db, 'tasks', 'starts_on', 'DATE NULL');
+    add_column($db, 'tasks', 'ends_on', 'DATE NULL');
+    $db->exec("CREATE TABLE IF NOT EXISTS task_skips (
+        task_id CHAR(36) NOT NULL,
+        from_date DATE NOT NULL,
+        to_date DATE NOT NULL,
+        PRIMARY KEY (task_id, from_date, to_date),
+        CONSTRAINT task_skips_task FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
+    ) $opts");
     // v4: automatic sign-out after inactivity.
     add_column($db, 'sessions', 'last_active', 'DATETIME NULL');
     $db->exec("CREATE TABLE IF NOT EXISTS reminders (
@@ -740,7 +768,7 @@ switch ($action) {
         respond(200, ['data' => $changed]);
 
     case 'listTasks':
-        $cols = 'id, employee, title, position, frequency, due_day, created_at';
+        $cols = 'id, employee, title, position, frequency, due_day, starts_on, ends_on, created_at';
         if ($isAdmin) {
             $q = $db->query("SELECT $cols FROM tasks ORDER BY position, created_at");
         } else {
@@ -751,6 +779,20 @@ switch ($action) {
         foreach ($rows as &$r) {
             $r['position'] = (int) $r['position'];
             $r['due_day'] = $r['due_day'] === null ? null : (int) $r['due_day'];
+            $r['skips'] = [];
+        }
+        unset($r);
+        // Recent "delete for now" ranges, as [from, to] pairs on each task.
+        $byId = [];
+        foreach ($rows as $i => $r) {
+            $byId[$r['id']] = $i;
+        }
+        $q = $db->prepare('SELECT task_id, from_date, to_date FROM task_skips WHERE to_date >= ?');
+        $q->execute([date('Y-m-d', strtotime('-70 days'))]);
+        foreach ($q->fetchAll() as $k) {
+            if (isset($byId[$k['task_id']])) {
+                $rows[$byId[$k['task_id']]]['skips'][] = [$k['from_date'], $k['to_date']];
+            }
         }
         respond(200, ['data' => $rows]);
 
@@ -823,18 +865,20 @@ switch ($action) {
             $position = (int) $q->fetchColumn();
         }
         [$frequency, $dueDay] = frequency_params($input);
+        [$startsOn, $endsOn] = span_params($input);
         $id = uuid4();
-        $db->prepare('INSERT INTO tasks (id, employee, title, position, from_seed, frequency, due_day) VALUES (?, ?, ?, ?, 0, ?, ?)')
-            ->execute([$id, $employee, $title, $position, $frequency, $dueDay]);
+        $db->prepare('INSERT INTO tasks (id, employee, title, position, from_seed, frequency, due_day, starts_on, ends_on) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)')
+            ->execute([$id, $employee, $title, $position, $frequency, $dueDay, $startsOn, $endsOn]);
         respond(200, ['data' => ['id' => $id]]);
 
     case 'updateTask':
         // Admin: rename, change Daily/Weekly/Monthly and due day, or reassign.
         require_admin($isAdmin);
         $t = require_own_task($db, true, null, id_param($input, 'id'));
-        $q = $db->prepare('SELECT frequency, due_day FROM tasks WHERE id = ?');
+        $q = $db->prepare('SELECT frequency, due_day, starts_on, ends_on FROM tasks WHERE id = ?');
         $q->execute([$t['id']]);
         $current = $q->fetch();
+        [$startsOn, $endsOn] = span_params($input, $current);
         $title = isset($input['title']) ? str_param($input, 'title', 200) : $t['title'];
         [$frequency, $dueDay] = frequency_params($input, $current);
         $employee = isset($input['employee']) ? str_param($input, 'employee', 100) : $t['employee'];
@@ -847,15 +891,15 @@ switch ($action) {
             $q->execute([$employee]);
             $position = (int) $q->fetchColumn();
         }
-        $db->prepare('UPDATE tasks SET title = ?, frequency = ?, due_day = ?, employee = ?, position = ? WHERE id = ?')
-            ->execute([$title, $frequency, $dueDay, $employee, $position, $t['id']]);
+        $db->prepare('UPDATE tasks SET title = ?, frequency = ?, due_day = ?, starts_on = ?, ends_on = ?, employee = ?, position = ? WHERE id = ?')
+            ->execute([$title, $frequency, $dueDay, $startsOn, $endsOn, $employee, $position, $t['id']]);
         respond(200, ['data' => true]);
 
     case 'duplicateTask':
         // Copy a task directly below the original, as "Title (2)", "(3)", ...
         $t = require_own_task($db, $isAdmin, $me, id_param($input, 'id'));
         $db->beginTransaction();
-        $q = $db->prepare('SELECT id, title, frequency, due_day FROM tasks WHERE employee = ? ORDER BY position, created_at FOR UPDATE');
+        $q = $db->prepare('SELECT id, title, frequency, due_day, starts_on, ends_on FROM tasks WHERE employee = ? ORDER BY position, created_at FOR UPDATE');
         $q->execute([$t['employee']]);
         $list = $q->fetchAll();
         $base = preg_replace('/ \(\d+\)$/', '', $t['title']);
@@ -872,12 +916,24 @@ switch ($action) {
         foreach ($list as $row) {
             $upd->execute([$pos++, $row['id']]);
             if ($row['id'] === $t['id']) {
-                $db->prepare('INSERT INTO tasks (id, employee, title, position, from_seed, frequency, due_day) VALUES (?, ?, ?, ?, 0, ?, ?)')
-                    ->execute([$newId, $t['employee'], $title, $pos++, $row['frequency'], $row['due_day']]);
+                $db->prepare('INSERT INTO tasks (id, employee, title, position, from_seed, frequency, due_day, starts_on, ends_on) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)')
+                    ->execute([$newId, $t['employee'], $title, $pos++, $row['frequency'], $row['due_day'], $row['starts_on'], $row['ends_on']]);
             }
         }
         $db->commit();
         respond(200, ['data' => ['id' => $newId]]);
+
+    case 'skipTask':
+        // "Delete for now": hide a task for a day, a week or a month. It comes
+        // back afterwards, and that time doesn't count as pending.
+        $t = require_own_task($db, $isAdmin, $me, id_param($input, 'id'));
+        $from = date_param($input, 'from');
+        $to = date_param($input, 'to');
+        if ($to < $from || (strtotime($to) - strtotime($from)) / 86400 > 31) {
+            fail('Invalid dates.');
+        }
+        $db->prepare('INSERT IGNORE INTO task_skips (task_id, from_date, to_date) VALUES (?, ?, ?)')->execute([$t['id'], $from, $to]);
+        respond(200, ['data' => true]);
 
     case 'removeTask':
         // The admin can delete any task; employees only their own.

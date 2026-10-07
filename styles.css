@@ -305,6 +305,18 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 .btn-now:hover { color: var(--text); border-color: var(--accent); }
 
 .row-tools { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
+.del-row td { background: var(--surface-2); padding: 10px 14px; }
+.del-row:hover { background: none; }
+.del-menu { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.del-question { font-weight: 600; margin-right: 6px; overflow-wrap: anywhere; }
+.del-option {
+  padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.del-option:hover, .del-option:focus-visible { background: var(--surface-2); outline: none; }
+.del-forever { color: var(--todo); }
+.del-forever:hover, .del-forever.armed { background: var(--todo-bg); }
+.del-cancel { color: var(--muted); border-color: transparent; background: none; }
 .btn-tool {
   width: 30px; height: 30px;
   background: none; border: none; color: var(--muted);
@@ -363,6 +375,14 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 .empty { color: var(--muted); text-align: center; padding: 24px 0; margin: 0; }
 
 .add-form { display: flex; gap: 10px; margin-top: 16px; }
+#add-repeat, .for-wrap select, .for-wrap input {
+  background: var(--bg); color: var(--text); color-scheme: dark;
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 9px 10px; font: inherit; font-size: 14px; min-width: 0;
+}
+.for-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.for-wrap input { width: 70px; }
+.for-label { color: var(--muted); font-size: 13px; }
 #add-input {
   flex: 1; min-width: 0;
   background: var(--bg); color: var(--text);

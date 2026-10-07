@@ -306,6 +306,60 @@
     return key;
   }
 
+  function addMonths(s, n) {
+    const d = parseYmd(s);
+    const last = new Date(d.getFullYear(), d.getMonth() + n + 1, 0).getDate();
+    return ymd(new Date(d.getFullYear(), d.getMonth() + n, Math.min(d.getDate(), last)));
+  }
+
+  // A task can run for a set time: starts_on / ends_on (null = open-ended).
+  function activeIn(task, from, to) {
+    return (!task.starts_on || task.starts_on <= to) && (!task.ends_on || task.ends_on >= from);
+  }
+
+  // "Delete for now" hides a task for a day, a week or a month.
+  function skippedFor(task, from, to) {
+    return (task.skips || []).some(([a, b]) => a <= from && b >= to);
+  }
+
+  // The days a Daily / Weekly / Monthly list covers for a date.
+  function viewSpan(which, date) {
+    if (which === "weekly") return [weekStart(date), addDays(weekStart(date), 6)];
+    if (which === "monthly") return [monthStart(date), addDays(nextMonth(monthStart(date)), -1)];
+    return [date, date];
+  }
+
+  // Start / end dates for a new task: once (today, this week or this month
+  // only), or repeating for a number of days, weeks or months (or always).
+  function newTaskSpan(which, once, count, unit) {
+    if (once) {
+      const [from, to] = viewSpan(which, todayStr);
+      return { starts_on: from, ends_on: to };
+    }
+    const n = Math.floor(Number(count));
+    if (unit === "always" || !n || n < 1) return { starts_on: todayStr, ends_on: null };
+    const end = unit === "months" ? addMonths(todayStr, n) : addDays(todayStr, unit === "weeks" ? n * 7 : n);
+    return { starts_on: todayStr, ends_on: addDays(end, -1) };
+  }
+
+  function spanLabel(task) {
+    const s = task.starts_on;
+    const e = task.ends_on;
+    if (!e) return s && s > todayStr ? "Starts " + dayDate(s) : "";
+    if (s && s === e) return s === todayStr ? "Today only" : "Only on " + dayDate(s);
+    if (s && s === weekStart(s) && e === addDays(s, 6)) return s === weekStart(todayStr) ? "This week only" : "Week of " + shortDate(s) + " only";
+    if (s && s === monthStart(s) && e === addDays(nextMonth(s), -1)) return s === monthStart(todayStr) ? "This month only" : parseYmd(s).toLocaleDateString("en-GB", { month: "long" }) + " only";
+    return (e < todayStr ? "Ended " : "Until ") + dayDate(e);
+  }
+
+  // Repeat choices, worded for the kind of task.
+  function repeatOptions(select, which) {
+    const words = which === "daily" ? ["Every day", "Today only"] : which === "weekly" ? ["Every week", "This week only"] : ["Every month", "This month only"];
+    const value = select.value || "repeat";
+    select.replaceChildren(option("repeat", words[0]), option("once", words[1]));
+    select.value = value;
+  }
+
   // The last of the first n Monday-Friday days of a month (key = its 1st):
   // each Saturday or Sunday in between adds a day.
   function windowEnd(key, n) {
@@ -455,6 +509,7 @@
       updateTask: (id, changes) => call("updateTask", { id, ...changes }),
       duplicateTask: (id) => call("duplicateTask", { id }),
       removeTask: (id) => call("removeTask", { id }),
+      skipTask: (id, from, to) => call("skipTask", { id, from, to }),
       setPositions: (updates) => call("setPositions", { updates }),
       saveEntry: (taskId, date, times) => call("saveEntry", { task_id: taskId, date, ...times }),
       skipEntry: (taskId, date, skipped) => call("skipEntry", { task_id: taskId, date, skipped }),
@@ -655,7 +710,12 @@
         if (!activeUsers().some((u) => u.name === row.employee)) throw apiError("Choose someone on the team to assign this task to.");
         const mine = state.tasks.filter((t) => t.employee === row.employee);
         const position = mine.length ? Math.max(...mine.map((t) => t.position)) + 1 : 0;
-        state.tasks.push({ employee: row.employee, title: row.title, position, ...freq(row), id: newId(), from_seed: false, created_at: new Date().toISOString() });
+        state.tasks.push({ employee: row.employee, title: row.title, position, ...freq(row), starts_on: row.starts_on || null, ends_on: row.ends_on || null, id: newId(), from_seed: false, created_at: new Date().toISOString() });
+        save();
+      },
+      async skipTask(id, from, to) {
+        const t = ownTask(id);
+        t.skips = [...(t.skips || []), [from, to]];
         save();
       },
       async updateTask(id, changes) {
@@ -667,6 +727,7 @@
           t.employee = changes.employee;
         }
         if (changes.title) t.title = changes.title;
+        if ("ends_on" in changes) t.ends_on = changes.ends_on || null;
         Object.assign(t, freq(changes, t));
         save();
       },
@@ -679,7 +740,7 @@
           const m = x.title.startsWith(base + " (") && x.title.slice(base.length).match(/^ \((\d+)\)$/);
           if (m) max = Math.max(max, Number(m[1]));
         }
-        const copy = { employee: t.employee, title: base + " (" + (max + 1) + ")", frequency: t.frequency || "daily", due_day: t.due_day ?? null, id: newId(), from_seed: false, created_at: new Date().toISOString() };
+        const copy = { employee: t.employee, title: base + " (" + (max + 1) + ")", frequency: t.frequency || "daily", due_day: t.due_day ?? null, starts_on: t.starts_on || null, ends_on: t.ends_on || null, id: newId(), from_seed: false, created_at: new Date().toISOString() };
         let pos = 0;
         for (const x of list) {
           x.position = pos++;
@@ -972,6 +1033,14 @@
     addInput: $("add-input"),
     addDue: $("add-due"),
     addDays: $("add-days"),
+    addRepeat: $("add-repeat"),
+    addFor: $("add-for"),
+    addCount: $("add-count"),
+    addUnit: $("add-unit"),
+    assignRepeat: $("assign-repeat"),
+    assignForField: $("assign-for-field"),
+    assignCount: $("assign-count"),
+    assignUnit: $("assign-unit"),
     assignDaysField: $("assign-days-field"),
     assignDays: $("assign-days"),
     assignDaysLabel: $("assign-days-label"),
@@ -1009,6 +1078,7 @@
   let selectedDate = todayStr;
   let renderPending = false;
   let editingTaskId = null;
+  let deleteMenuFor = null; // task id whose delete choices are open
   let subscribed = false;
 
   const isAdmin = () => Boolean(me && me.role === "admin");
@@ -1155,7 +1225,8 @@
   // What a person's Daily / Weekly / Monthly list shows: set-weekday tasks
   // are in the daily list on their days, and always in the weekly list.
   function listFor(name, which, date) {
-    const mine = tasksFor(name);
+    const [from, to] = viewSpan(which, date || selectedDate);
+    const mine = tasksFor(name).filter((t) => activeIn(t, from, to) && !skippedFor(t, from, to));
     if (which === "daily") return mine.filter((t) => (t.frequency || "daily") === "daily" || scheduledOn(t, date || selectedDate));
     if (which === "weekly") return mine.filter((t) => t.frequency === "weekly" || t.frequency === "weekdays");
     if (which === "monthly") return mine.filter((t) => t.frequency === "monthly" || t.frequency === "monthdays" || t.frequency === "monthstart");
@@ -1180,7 +1251,7 @@
       const ws = weekStart(selectedDate);
       dates = maskDays(task.due_day || 0).map((d) => addDays(ws, d - 1));
     }
-    return dates.filter((date) => date >= from).map((date) => {
+    return dates.filter((date) => date >= from && activeIn(task, date, date) && !skippedFor(task, date, date)).map((date) => {
       const d = isoDay(date);
       const e = entries.get(task.id + "|" + date) || recent.get(task.id + "|" + date) || EMPTY_ENTRY;
       let state = statusOf(e);
@@ -1240,12 +1311,13 @@
     const from = pendingWindowStart();
     const recorded = (task, key) => recent.get(task.id + "|" + key) || entries.get(task.id + "|" + key) || EMPTY_ENTRY;
     const add = (task, key, due) => {
+      if (skippedFor(task, key, due) || !activeIn(task, due, due)) return;
       const e = recorded(task, key);
       if (!e.end_time && !e.skipped) items.push({ task, key, due, entry: e });
     };
     for (const task of tasksFor(name)) {
       const created = String(task.created_at || "").slice(0, 10) || from;
-      const start = maxDate(from, created);
+      const start = maxDate(maxDate(from, created), task.starts_on || from);
       const freq = task.frequency || "daily";
       if (freq === "daily") {
         for (let d = start; d < todayStr; d = addDays(d, 1)) {
@@ -1664,6 +1736,12 @@
     freq.addEventListener("change", syncDue);
     syncDue();
 
+    const endField = h("label", "field");
+    const endInput = document.createElement("input");
+    endInput.type = "date";
+    endInput.value = task.ends_on || "";
+    endField.append(h("span", "", "Last day (optional)"), endInput);
+
     const whoField = h("label", "field");
     const who = document.createElement("select");
     who.append(...employees.map((n) => option(n, n)));
@@ -1679,10 +1757,11 @@
       render();
     });
 
-    form.append(titleField, freqField, dueField, daysField, datesField, whoField, saveBtn, cancel);
+    form.append(titleField, freqField, dueField, daysField, datesField, endField, whoField, saveBtn, cancel);
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const changes = { title: title.value.trim(), frequency: freq.value, employee: who.value };
+      const changes = { title: title.value.trim(), frequency: freq.value, employee: who.value, ends_on: endInput.value || null };
+      if (changes.ends_on && task.starts_on && changes.ends_on < task.starts_on) return showToast("The last day must be after " + dayDate(task.starts_on) + ".");
       if (freq.value === "monthstart") changes.due_day = Number(due.value);
       if (freq.value === "monthly") {
         if (!getDates().length) return showToast("Pick at least one date.");
@@ -1728,15 +1807,83 @@
       tools.append(edit);
     }
     const del = iconButton("trash", "Delete " + task.title, "btn-tool btn-delete", () => {
-      // Two-step delete: first click arms the button, second click deletes.
-      if (del.classList.contains("armed")) return deleteTask(task);
-      del.classList.add("armed");
-      del.textContent = "Delete?";
-      setTimeout(() => render(), 3000);
+      deleteMenuFor = deleteMenuFor === task.id ? null : task.id;
+      render();
     });
     tools.append(del);
     return tools;
   }
+
+  // The period "Delete for now" applies to: today, this week or this month
+  // (only while looking at the current one).
+  function nowSpan() {
+    const [from, to] = viewSpan(view, selectedDate);
+    if (from > todayStr || to < todayStr) return null;
+    return { from, to, word: view === "weekly" ? "this week" : view === "monthly" ? "this month" : "today", next: view === "weekly" ? "next week" : view === "monthly" ? "next month" : "tomorrow" };
+  }
+
+  function deleteRow(task, colspan) {
+    const tr = h("tr", "del-row");
+    const td = h("td");
+    td.colSpan = colspan;
+    td.append(deleteMenu(task));
+    tr.append(td);
+    return tr;
+  }
+
+  function deleteMenu(task) {
+    const menu = h("div", "del-menu");
+    menu.append(h("span", "del-question", "Delete “" + task.title + "”?"));
+    menu.setAttribute("role", "menu");
+    const span = nowSpan();
+    if (span) {
+      const once = h("button", "del-option", "Delete for " + span.word);
+      once.type = "button";
+      once.title = "It comes back " + span.next;
+      once.addEventListener("click", () => skipTask(task, span));
+      menu.append(once);
+    }
+    const forever = h("button", "del-option del-forever", "Delete permanently");
+    forever.type = "button";
+    forever.title = "Remove this task and its history for good";
+    forever.addEventListener("click", () => {
+      if (!forever.classList.contains("armed")) {
+        forever.classList.add("armed");
+        forever.textContent = "Sure? Delete permanently";
+        return;
+      }
+      deleteMenuFor = null;
+      deleteTask(task);
+    });
+    const cancel = h("button", "del-option del-cancel", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => {
+      deleteMenuFor = null;
+      render();
+    });
+    menu.append(forever, cancel);
+    return menu;
+  }
+
+  async function skipTask(task, span) {
+    deleteMenuFor = null;
+    task.skips = [...(task.skips || []), [span.from, span.to]];
+    render();
+    try {
+      await store.skipTask(task.id, span.from, span.to);
+      showToast("Removed “" + task.title + "” for " + span.word + ". It comes back " + span.next + ".");
+    } catch (e) {
+      if (!handleAuthError(e)) showToast("Couldn't remove: " + e.message);
+    }
+    refresh();
+  }
+
+  document.addEventListener("click", (e) => {
+    if (deleteMenuFor && !e.target.closest(".del-menu, .btn-delete")) {
+      deleteMenuFor = null;
+      render();
+    }
+  });
 
   function renderRows(list) {
     const colspan = 7 + (countsItems() ? 1 : 0);
@@ -1744,6 +1891,7 @@
     list.forEach((task, i) => {
       if (isPeriodRow(task, view)) {
         rows.push(periodRow(task, i, list));
+        if (deleteMenuFor === task.id) rows.push(deleteRow(task, colspan));
         if (editingTaskId === task.id) rows.push(editRow(task, colspan));
         return;
       }
@@ -1756,7 +1904,7 @@
       const num = h("td", "num", i + 1);
       const title = h("td", "title");
       title.append(h("span", "", task.title));
-      const due = dueLabel(task);
+      const due = [dueLabel(task), spanLabel(task)].filter(Boolean).join(" · ");
       if (due) title.append(h("span", "task-due", due));
 
       const st = h("td", "status-cell");
@@ -1776,6 +1924,7 @@
         actions
       );
       rows.push(tr);
+      if (deleteMenuFor === task.id) rows.push(deleteRow(task, colspan));
       if (editingTaskId === task.id) rows.push(editRow(task, colspan));
     });
     el.rows.replaceChildren(...rows);
@@ -1791,7 +1940,7 @@
     const occ = periodOccurrences(task);
     const monthly = task.frequency === "monthdays";
     const title = h("td", "title");
-    title.append(h("span", "", task.title), h("span", "task-due", dueLabel(task) + " · in Daily Tasks on those " + (monthly ? "dates" : "days")));
+    title.append(h("span", "", task.title), h("span", "task-due", [dueLabel(task) + " · in Daily Tasks on those " + (monthly ? "dates" : "days"), spanLabel(task)].filter(Boolean).join(" · ")));
     const chips = h("div", "occ-chips");
     const word = { done: "done", in_progress: "in progress", missed: "missed", today: "today", upcoming: "upcoming", excused: "excused" };
     for (const o of occ) {
@@ -2067,6 +2216,10 @@
   let getAssignDays = () => [1];
   function syncAssignDue() {
     const f = el.assignFreq.value;
+    repeatOptions(el.assignRepeat, f === "monthstart" ? "monthly" : f);
+    el.assignForField.hidden = el.assignRepeat.value === "once";
+    el.assignUnit.value = "always";
+    el.assignCount.hidden = true;
     el.assignDueField.hidden = f !== "monthstart";
     if (f === "monthstart") {
       el.assignDueLabel.textContent = "Within";
@@ -2077,6 +2230,10 @@
     if (f !== "daily" && f !== "monthstart") getAssignDays = dayPicker(el.assignDays, [1], f === "monthly" ? "month" : "week");
   }
   el.assignFreq.addEventListener("change", syncAssignDue);
+  el.assignRepeat.addEventListener("change", () => (el.assignForField.hidden = el.assignRepeat.value === "once"));
+  el.addRepeat.addEventListener("change", () => (el.addFor.hidden = el.addRepeat.value === "once"));
+  el.addUnit.addEventListener("change", () => (el.addCount.hidden = el.addUnit.value === "always"));
+  el.assignUnit.addEventListener("change", () => (el.assignCount.hidden = el.assignUnit.value === "always"));
 
   // ---- Admin: reports --------------------------------------------------------
 
@@ -2227,7 +2384,7 @@
     const employee = el.assignTo.value;
     const frequency = el.assignFreq.value;
     if (!title || !employee) return;
-    const row = { employee, title, frequency };
+    const row = { employee, title, frequency, ...newTaskSpan(frequency === "monthstart" ? "monthly" : frequency, el.assignRepeat.value === "once", el.assignCount.value, el.assignUnit.value) };
     if (frequency === "monthstart") row.due_day = Number(el.assignDue.value);
     else if (frequency !== "daily") {
       if (!getAssignDays().length) return showToast(frequency === "monthly" ? "Pick at least one date." : "Pick at least one day.");
@@ -2792,6 +2949,14 @@
       el.addDays.dataset.kind = view;
     }
     el.addInput.placeholder = isAdmin() ? "Add a " + view + " task for " + active + "…" : "Add a " + view + " task…";
+    if (el.addRepeat.dataset.kind !== view) {
+      el.addRepeat.value = "repeat";
+      repeatOptions(el.addRepeat, view);
+      el.addUnit.value = "always";
+      el.addCount.hidden = true;
+      el.addRepeat.dataset.kind = view;
+    }
+    el.addFor.hidden = el.addRepeat.value === "once";
   }
 
   let getAddDays = () => [1];
@@ -2928,7 +3093,7 @@
     e.preventDefault();
     const title = el.addInput.value.trim();
     if (!title || !isPersonTab() || !isTaskView()) return;
-    const row = { employee: active, title, frequency: view };
+    const row = { employee: active, title, frequency: view, ...newTaskSpan(view, el.addRepeat.value === "once", el.addCount.value, el.addUnit.value) };
     if (view !== "daily") {
       if (!getAddDays().length) return showToast(view === "monthly" ? "Pick at least one date." : "Pick at least one day.");
       Object.assign(row, view === "monthly" ? freqFromDates(getAddDays()) : freqFromDays(getAddDays()));
