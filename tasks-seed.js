@@ -19,7 +19,7 @@
 //     the first 6 Monday-Friday days of the month (each Sat/Sun adds a day).
 //     It is in Daily Tasks on each of those days and keeps one record for the
 //     month (Start, Pause, Finish), and goes to Pending if not finished by then.
-window.SEED_VERSION = 7;
+window.SEED_VERSION = 8;
 
 window.EMPLOYEES = ["Anil", "Madhu", "Manju", "Harsha", "Manju Designer"];
 
@@ -34,6 +34,21 @@ window.DONE_COUNTERS = {
 };
 
 window.SEED_TASKS = {
+  Anil: [
+    "Client SEO – HAAPS (45 min)",
+    "Client Ads – HAAPS (20 min)",
+    "Client Ads – KVA (20 min)",
+    "Client Ads – Commet (20 min)",
+    "Social media posting – UBM (20 min)",
+    "Social media (content + client SM) – HAAPS.AI, HAAPS.Digital (Mon/Wed/Fri 5 hrs · Tue/Thu 6 hrs · Sat 2 hrs)",
+    { title: "GMB – HAAPS: posts 20 min + listing 25 min", days: ["Mon", "Wed", "Fri"] },
+    { title: "Website updates (plugin, theme, WordPress) + web backup – HAAPS.AI, HAAPS.Digital (3 hrs)", frequency: "weekly", due_day: 6 },
+    { title: "Poster creation – UBM (2.5 hrs)", frequency: "weekly", due_day: 6 },
+    { title: "Full website updates + backup – HAAPS.AI, HAAPS.Digital (1 full day)", frequency: "monthstart", due_day: 5 },
+    { title: "Blogs – HAAPS (40 min)", frequency: "monthstart", due_day: 5 },
+    { title: "SEO & SMM report – UBM (30 min)", frequency: "monthstart", due_day: 5 },
+    { title: "SEO & SMM report – HAAPS (2–3 hrs)", frequency: "monthstart", due_day: 5 },
+  ],
   Madhu: [
     "Meta Ads - HLC",
     "SEO - Dr. Varun Kumar J",
