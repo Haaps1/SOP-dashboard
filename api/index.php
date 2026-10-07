@@ -27,7 +27,7 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 // weekdays = set days of the week; due_day is then a bitmask (Mon = 1, Tue = 2,
 // Wed = 4 ... Sun = 64) and the task is part of the daily list on those days.
 // monthdays = set dates of the month; due_day is a bitmask of dates (1st = 1,
@@ -291,6 +291,10 @@ function ensure_schema(PDO $db): void
     // "delete for now": the task is hidden from from_date to to_date.
     add_column($db, 'tasks', 'starts_on', 'DATE NULL');
     add_column($db, 'tasks', 'ends_on', 'DATE NULL');
+    // v8: own usernames, and tasks paused or cancelled by the admin.
+    add_column($db, 'users', 'username', 'VARCHAR(100) NULL');
+    add_column($db, 'tasks', 'state', 'VARCHAR(12) NULL');
+    add_column($db, 'tasks', 'state_on', 'DATE NULL');
     $db->exec("CREATE TABLE IF NOT EXISTS task_skips (
         task_id CHAR(36) NOT NULL,
         from_date DATE NOT NULL,
@@ -475,6 +479,25 @@ function same_username(string $a, string $b): bool
     return $norm($a) === $norm($b);
 }
 
+// The admin's sign-in: set from the Team page (stored in app_meta), else
+// admin_username / admin_password from config.php.
+function admin_username(PDO $db): string
+{
+    return meta($db, 'admin_username') ?? ADMIN_USERNAME;
+}
+
+function admin_password_ok(PDO $db, string $given, array $config): bool
+{
+    $hash = meta($db, 'admin_password_hash');
+    return $hash !== null ? password_verify($given, $hash) : config_password_matches($given, $config['admin_password']);
+}
+
+function set_meta(PDO $db, string $key, string $value): void
+{
+    $db->prepare('INSERT INTO app_meta (meta_key, meta_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)')
+        ->execute([$key, $value]);
+}
+
 // Passwords in config.php may be plain text or a password_hash() value.
 function config_password_matches(string $given, string $configured): bool
 {
@@ -486,10 +509,11 @@ function config_password_matches(string $given, string $configured): bool
 
 function user_list(PDO $db, bool $includeInactive = false): array
 {
-    $rows = $db->query('SELECT name, password_hash IS NOT NULL AS has_password, active, position FROM users'
+    $rows = $db->query('SELECT name, username, password_hash IS NOT NULL AS has_password, active, position FROM users'
         . ($includeInactive ? '' : ' WHERE active = 1') . ' ORDER BY position, name')->fetchAll();
     return array_map(fn($r) => [
         'name' => $r['name'],
+        'username' => $r['username'] ?? $r['name'],
         'has_password' => (bool) $r['has_password'],
         'active' => (bool) $r['active'],
     ], $rows);
@@ -524,7 +548,7 @@ function session_payload(PDO $db, ?array $s): array
     $users = [];
     if (!ADMIN_ENTRY) {
         ensure_users($db);
-        $users = user_list($db);
+        $users = array_map(fn($u) => ['name' => $u['name'], 'has_password' => $u['has_password']], user_list($db));
     }
     return [
         'site_ok' => $siteOk,
@@ -534,6 +558,7 @@ function session_payload(PDO $db, ?array $s): array
         'idle_minutes' => IDLE_MINUTES,
         'today' => date('Y-m-d'),
         'tracking_start' => $user ? (meta($db, 'tracking_start') ?? date('Y-m-d')) : null,
+        'admin_username' => $user && $user['role'] === 'admin' ? admin_username($db) : null,
     ];
 }
 
@@ -652,8 +677,8 @@ switch ($action) {
         }
         check_rate_limit($db);
         $username = is_string($input['username'] ?? null) ? $input['username'] : '';
-        $passOk = config_password_matches(password_param($input), $config['admin_password']);
-        if (!same_username($username, ADMIN_USERNAME) || !$passOk) {
+        $passOk = admin_password_ok($db, password_param($input), $config);
+        if (!same_username($username, admin_username($db)) || !$passOk) {
             record_failed_login($db);
             fail('Wrong username or password.', 401, 'wrong_password');
         }
@@ -675,11 +700,16 @@ switch ($action) {
         $password = password_param($input);
         ensure_users($db);
         $u = null;
-        foreach ($db->query('SELECT id, name, password_hash FROM users WHERE active = 1')->fetchAll() as $row) {
-            if (same_username($row['name'], $name)) {
+        foreach ($db->query('SELECT id, name, username, password_hash FROM users WHERE active = 1')->fetchAll() as $row) {
+            if (same_username($row['username'] ?? $row['name'], $name)) {
                 $u = $row;
                 break;
             }
+        }
+        // The name chosen on the sign-in screen must be the same person.
+        $person = is_string($input['person'] ?? null) ? $input['person'] : null;
+        if ($u && $person !== null && $person !== '' && $person !== $u['name']) {
+            $u = null;
         }
         if (!$u || $u['password_hash'] === null || !password_verify($password, $u['password_hash'])) {
             record_failed_login($db);
@@ -776,7 +806,7 @@ switch ($action) {
         respond(200, ['data' => $changed]);
 
     case 'listTasks':
-        $cols = 'id, employee, title, position, frequency, due_day, starts_on, ends_on, created_at';
+        $cols = 'id, employee, title, position, frequency, due_day, starts_on, ends_on, state, state_on, created_at';
         if ($isAdmin) {
             $q = $db->query("SELECT $cols FROM tasks ORDER BY position, created_at");
         } else {
@@ -932,9 +962,10 @@ switch ($action) {
         respond(200, ['data' => ['id' => $newId]]);
 
     case 'skipTask':
-        // "Delete for now": hide a task for a day, a week or a month. It comes
-        // back afterwards, and that time doesn't count as pending.
-        $t = require_own_task($db, $isAdmin, $me, id_param($input, 'id'));
+        // Admin, "Delete for now": hide a task for a day, a week or a month.
+        // It comes back afterwards, and that time doesn't count as pending.
+        require_admin($isAdmin);
+        $t = require_own_task($db, true, null, id_param($input, 'id'));
         $from = date_param($input, 'from');
         $to = date_param($input, 'to');
         if ($to < $from || (strtotime($to) - strtotime($from)) / 86400 > 31) {
@@ -943,9 +974,26 @@ switch ($action) {
         $db->prepare('INSERT IGNORE INTO task_skips (task_id, from_date, to_date) VALUES (?, ?, ?)')->execute([$t['id'], $from, $to]);
         respond(200, ['data' => true]);
 
-    case 'removeTask':
-        // The admin can delete any task; employees only their own.
+    case 'setTaskState':
+        // Pause a task (until resumed) or cancel it (gone from tomorrow,
+        // history kept). Employees can mark their own tasks; only the admin
+        // can resume / restore one (state null).
         $t = require_own_task($db, $isAdmin, $me, id_param($input, 'id'));
+        $state = $input['state'] ?? null;
+        if ($state !== null && $state !== 'paused' && $state !== 'cancelled') {
+            fail('Invalid state.');
+        }
+        if ($state === null) {
+            require_admin($isAdmin);
+        }
+        $db->prepare('UPDATE tasks SET state = ?, state_on = ? WHERE id = ?')
+            ->execute([$state, $state === null ? null : date('Y-m-d'), $t['id']]);
+        respond(200, ['data' => true]);
+
+    case 'removeTask':
+        // Only the admin can delete tasks.
+        require_admin($isAdmin);
+        $t = require_own_task($db, true, null, id_param($input, 'id'));
         $db->prepare('DELETE FROM tasks WHERE id = ?')->execute([$t['id']]);
         respond(200, ['data' => true]);
 
@@ -976,6 +1024,12 @@ switch ($action) {
         // the first day of its week/month for weekly and monthly tasks.
         $taskId = id_param($input, 'task_id');
         require_own_task($db, $isAdmin, $me, $taskId);
+        $q = $db->prepare('SELECT state FROM tasks WHERE id = ?');
+        $q->execute([$taskId]);
+        $state = $q->fetchColumn();
+        if ($state === 'paused' || $state === 'cancelled') {
+            fail('This task was ' . $state . ' by the admin.', 409);
+        }
         $date = date_param($input, 'date');
         $today = date('Y-m-d');
         if ($date > $today) {
@@ -1118,6 +1172,58 @@ switch ($action) {
         // Sign them out everywhere so the new password takes effect.
         $db->prepare('UPDATE sessions SET role = NULL, user_id = NULL WHERE user_id = ?')->execute([$id]);
         respond(200, ['data' => user_list($db)]);
+
+    case 'setUsername':
+        // Admin: a person's sign-in username (their name if not set).
+        require_admin($isAdmin);
+        $name = str_param($input, 'name', 100);
+        $username = trim(str_param($input, 'username', 100));
+        if (mb_strlen($username) < 2) {
+            fail('Use a username of at least 2 characters.');
+        }
+        $q = $db->prepare('SELECT id FROM users WHERE name = ? AND active = 1');
+        $q->execute([$name]);
+        $id = $q->fetchColumn();
+        if ($id === false) {
+            fail('That person is not on the team.', 404);
+        }
+        foreach ($db->query('SELECT id, name, username FROM users WHERE active = 1')->fetchAll() as $row) {
+            if ((int) $row['id'] !== (int) $id && (same_username($row['username'] ?? $row['name'], $username) || same_username($row['name'], $username))) {
+                fail('Someone else already uses that username.');
+            }
+        }
+        if (same_username($username, admin_username($db))) {
+            fail('That is the admin username.');
+        }
+        $db->prepare('UPDATE users SET username = ? WHERE id = ?')->execute([$username, $id]);
+        respond(200, ['data' => user_list($db)]);
+
+    case 'setAdminLogin':
+        // Admin: change the admin username and/or password (needs the current one).
+        require_admin($isAdmin);
+        if (!admin_password_ok($db, is_string($input['current_password'] ?? null) ? $input['current_password'] : '', $config)) {
+            fail('Your current password is wrong.', 403);
+        }
+        $username = trim(str_param($input, 'username', 100));
+        if (mb_strlen($username) < 2) {
+            fail('Use a username of at least 2 characters.');
+        }
+        foreach ($db->query('SELECT name, username FROM users WHERE active = 1')->fetchAll() as $row) {
+            if (same_username($row['username'] ?? $row['name'], $username) || same_username($row['name'], $username)) {
+                fail('A team member already uses that username.');
+            }
+        }
+        $new = is_string($input['new_password'] ?? null) ? $input['new_password'] : '';
+        if ($new !== '' && strlen($new) < 6) {
+            fail('Use an admin password of at least 6 characters.');
+        }
+        set_meta($db, 'admin_username', $username);
+        if ($new !== '') {
+            set_meta($db, 'admin_password_hash', password_hash($new, PASSWORD_DEFAULT));
+            // Sign out other admin browsers; this one stays signed in.
+            $db->prepare("DELETE FROM sessions WHERE role = 'admin' AND token_hash <> ?")->execute([$session['token_hash']]);
+        }
+        respond(200, ['data' => ['admin_username' => $username]]);
 
     case 'removeUser':
         require_admin($isAdmin);

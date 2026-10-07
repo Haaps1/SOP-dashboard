@@ -310,8 +310,27 @@
       <div id="team" class="admin-view" hidden>
         <section class="panel">
           <div class="section-head"><h2>Team members</h2></div>
-          <p class="section-help">Everyone signs in with the dashboard password, then their own password. Setting a new password signs that person out.</p>
+          <p class="section-help">On haaps.co.in each person chooses their name, then types their username and password. A username is the person's name until you set one. Setting a new password signs that person out.</p>
           <div id="team-list" class="team-list"></div>
+        </section>
+        <section class="panel">
+          <div class="section-head"><h2>Admin sign-in</h2></div>
+          <p class="section-help">The username and password for this admin site. Leave the new password empty to change only the username.</p>
+          <form id="admin-login-form" class="assign-form" autocomplete="off">
+            <label class="field">
+              <span>Admin username</span>
+              <input id="admin-new-username" type="text" maxlength="100" autocomplete="off" required />
+            </label>
+            <label class="field">
+              <span>New password (optional)</span>
+              <input id="admin-new-password" type="password" maxlength="100" autocomplete="new-password" placeholder="At least 6 characters" />
+            </label>
+            <label class="field">
+              <span>Current password</span>
+              <input id="admin-current-password" type="password" maxlength="100" autocomplete="current-password" required />
+            </label>
+            <button type="submit" class="btn-primary">Save admin sign-in</button>
+          </form>
         </section>
         <section class="panel">
           <div class="section-head"><h2>Add a team member</h2></div>

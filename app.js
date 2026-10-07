@@ -208,6 +208,7 @@
     trash: '<path d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 12H7L6 9zm4 2v8h2v-8h-2zm4 0v8h2v-8h-2z"/>',
     edit: '<path d="M4 17.25V20h2.75L17.8 8.95l-2.75-2.75L4 17.25zM20.7 6.05a1 1 0 0 0 0-1.41l-1.34-1.34a1 1 0 0 0-1.41 0l-1.13 1.13 2.75 2.75 1.13-1.13z"/>',
     check: '<path d="M9.5 16.2L5.3 12l-1.4 1.4 5.6 5.6L20.1 8.4 18.7 7z"/>',
+    stop: '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 2a8 8 0 0 1 6.32 12.9L7.1 5.68A7.96 7.96 0 0 1 12 4zM4 12c0-1.85.63-3.55 1.68-4.9l11.22 11.22A8 8 0 0 1 4 12z"/>',
   };
 
   function iconButton(icon, label, className, onClick) {
@@ -314,8 +315,12 @@
 
   // A task can run for a set time: starts_on / ends_on (null = open-ended).
   function activeIn(task, from, to) {
+    // A cancelled task still shows on the day it was cancelled, then it's gone.
+    if (task.state === "cancelled" && task.state_on && task.state_on < from) return false;
     return (!task.starts_on || task.starts_on <= to) && (!task.ends_on || task.ends_on >= from);
   }
+
+  const HELD_LABEL = { paused: "Paused by admin", cancelled: "Cancelled by admin" };
 
   // "Delete for now" hides a task for a day, a week or a month.
   function skippedFor(task, from, to) {
@@ -497,7 +502,7 @@
       mode: "php",
       getSession: () => call("session"),
       siteLogin: (password) => call("siteLogin", { password }),
-      userLogin: (name, password) => call("userLogin", { name, password }),
+      userLogin: (name, password, person) => call("userLogin", { name, password, person }),
       adminLogin: (username, password) => call("adminLogin", { username, password }),
       switchUser: () => call("switchUser"),
       logout: () => call("logout"),
@@ -510,6 +515,7 @@
       duplicateTask: (id) => call("duplicateTask", { id }),
       removeTask: (id) => call("removeTask", { id }),
       skipTask: (id, from, to) => call("skipTask", { id, from, to }),
+      setTaskState: (id, state) => call("setTaskState", { id, state }),
       setPositions: (updates) => call("setPositions", { updates }),
       saveEntry: (taskId, date, times) => call("saveEntry", { task_id: taskId, date, ...times }),
       skipEntry: (taskId, date, skipped) => call("skipEntry", { task_id: taskId, date, skipped }),
@@ -523,6 +529,8 @@
       listUsers: () => call("listUsers"),
       addUser: (name, password) => call("addUser", { name, password }),
       setUserPassword: (name, password) => call("setUserPassword", { name, password }),
+      setUsername: (name, username) => call("setUsername", { name, username }),
+      setAdminLogin: (login) => call("setAdminLogin", login),
       removeUser: (name) => call("removeUser", { name }),
       report: (from, to) => call("report", { from, to }),
       reportDetail: (from, to, employee) => call("reportDetail", { from, to, employee }),
@@ -597,7 +605,7 @@
     const setSession = (v) => (state[sessionKey] = v);
     const isAdmin = () => me().role === "admin";
     const activeUsers = () => state.users.filter((u) => u.active).sort((a, b) => a.position - b.position);
-    const publicUsers = () => activeUsers().map((u) => ({ name: u.name, has_password: Boolean(u.password), active: true }));
+    const publicUsers = () => activeUsers().map((u) => ({ name: u.name, username: u.username || u.name, has_password: Boolean(u.password), active: true }));
     function payload() {
       const s = me();
       const ok = s.site_ok && ((MODE === "admin" && s.role === "admin") || (MODE === "team" && s.role === "employee"));
@@ -659,10 +667,10 @@
         save();
         return payload();
       },
-      async userLogin(name, password) {
+      async userLogin(name, password, person) {
         const norm = (x) => String(x).replace(/\s+/g, "").toLowerCase();
-        const u = activeUsers().find((x) => norm(x.name) === norm(name));
-        if (!u || !u.password || password !== u.password) throw apiError("Wrong username or password.", "wrong_password");
+        const u = activeUsers().find((x) => norm(x.username || x.name) === norm(name));
+        if (!u || (person && person !== u.name) || !u.password || password !== u.password) throw apiError("Wrong username or password.", "wrong_password");
         setSession({ site_ok: true, role: "employee", name: u.name });
         save();
         return payload();
@@ -851,6 +859,23 @@
         save();
         return publicUsers();
       },
+      async setTaskState(id, st) {
+        requireAdmin();
+        Object.assign(ownTask(id), { state: st, state_on: st ? today() : null });
+        save();
+      },
+      async setUsername(name, username) {
+        requireAdmin();
+        const u = activeUsers().find((x) => x.name === name);
+        if (u) u.username = username;
+        save();
+        return publicUsers();
+      },
+      async setAdminLogin(login) {
+        requireAdmin();
+        if (login.current_password !== DEMO.admin) throw apiError("Your current password is wrong.");
+        return { admin_username: login.username };
+      },
       async setUserPassword(name, password) {
         requireAdmin();
         if (password.length < 4) throw apiError("Use a password of at least 4 characters.");
@@ -929,6 +954,10 @@
     authUser: $("auth-user"),
     authAdmin: $("auth-admin"),
     adminUsername: $("admin-username"),
+    adminLoginForm: $("admin-login-form"),
+    adminNewUsername: $("admin-new-username"),
+    adminNewPassword: $("admin-new-password"),
+    adminCurrentPassword: $("admin-current-password"),
     adminPassword: $("admin-password"),
     adminError: $("admin-error"),
     greeting: $("greeting"),
@@ -1277,9 +1306,14 @@
     return s;
   }
 
+  // Tasks paused or cancelled by the admin don't count.
   function countStatuses(list, which) {
-    const c = { todo: 0, in_progress: 0, done: 0 };
-    list.forEach((t) => c[listStatus(t, which)]++);
+    const c = { todo: 0, in_progress: 0, done: 0, total: 0 };
+    list.forEach((t) => {
+      if (t.state) return;
+      c[listStatus(t, which)]++;
+      c.total++;
+    });
     return c;
   }
 
@@ -1304,6 +1338,8 @@
     const recorded = (task, key) => recent.get(task.id + "|" + key) || entries.get(task.id + "|" + key) || EMPTY_ENTRY;
     const add = (task, key, due) => {
       if (skippedFor(task, key, due) || !activeIn(task, due, due)) return;
+      // Nothing is pending for a cancelled task, or for a paused one while it's paused.
+      if (task.state === "cancelled" || (task.state === "paused" && due >= task.state_on)) return;
       const e = recorded(task, key);
       if (!e.end_time && !e.skipped) items.push({ task, key, due, entry: e });
     };
@@ -1366,14 +1402,14 @@
     el.greeting.textContent = greetingText();
     const people = isAdmin() ? employees : [me.name];
     const list = people.flatMap((name) => listFor(name, "daily"));
-    const done = countStatuses(list).done;
-    const pct = list.length ? Math.round((done / list.length) * 100) : 0;
+    const { done, total: count } = countStatuses(list);
+    const pct = count ? Math.round((done / count) * 100) : 0;
     const circumference = 2 * Math.PI * 27;
     el.ringFill.style.strokeDasharray = circumference.toFixed(2);
     el.ringFill.style.strokeDashoffset = (circumference * (1 - pct / 100)).toFixed(2);
     el.ringPct.textContent = pct + "%";
     const when = isToday() ? "today" : "on " + dayDate(selectedDate);
-    el.progressMain.textContent = done + " of " + list.length + " daily tasks done " + (isAdmin() ? "by the team " : "") + when;
+    el.progressMain.textContent = done + " of " + count + " daily tasks done " + (isAdmin() ? "by the team " : "") + when;
     const pending = people.reduce((n, name) => n + pendingFor(name).length, 0);
     const due = people.reduce((n, name) => n + dueReminders(name).length, 0);
     const bits = [];
@@ -1394,7 +1430,8 @@
     if (!noun) return;
     const n = h("strong", "", quantityTotal(list));
     const label = h("span", "done-label", noun + " done " + (isToday() ? "today" : "on this day"));
-    const sub = h("span", "done-sub", countStatuses(list).done + " / " + list.length + " tasks finished");
+    const cs = countStatuses(list);
+    const sub = h("span", "done-sub", cs.done + " / " + cs.total + " tasks finished");
     el.doneCounter.replaceChildren(n, label, sub);
   }
 
@@ -1445,7 +1482,8 @@
       tab(OVERVIEW, "Overview", undefined, "tab-admin"),
       ...employees.map((name) => {
         const list = listFor(name, "daily");
-        return tab(name, name, countStatuses(list).done + "/" + list.length, "", pendingFor(name).length || 0);
+        const c = countStatuses(list);
+        return tab(name, name, c.done + "/" + c.total, "", pendingFor(name).length || 0);
       }),
       tab(REPORTS, "Reports", undefined, "tab-admin"),
       tab(TEAM, "Team", undefined, "tab-admin")
@@ -1468,7 +1506,8 @@
         btn.setAttribute("aria-selected", String(key === view));
         btn.append(h("span", "", label));
         if (counts[key]) {
-          btn.append(h("span", "tab-count", countStatuses(counts[key], key).done + "/" + counts[key].length));
+          const c = countStatuses(counts[key], key);
+          btn.append(h("span", "tab-count", c.done + "/" + c.total));
         } else if (key === "pending") {
           const n = pendingFor(active).length;
           btn.append(h("span", "tab-count" + (n ? " count-alert" : ""), n));
@@ -1798,7 +1837,7 @@
       });
       tools.append(edit);
     }
-    const del = iconButton("trash", "Delete " + task.title, "btn-tool btn-delete", () => {
+    const del = iconButton(isAdmin() ? "trash" : "stop", (isAdmin() ? "Delete or stop " : "Stop ") + task.title, "btn-tool btn-delete", () => {
       deleteMenuFor = deleteMenuFor === task.id ? null : task.id;
       render();
     });
@@ -1823,38 +1862,73 @@
     return tr;
   }
 
+  // The admin: delete for now, delete permanently, paused / cancelled by
+  // admin. Employees: only paused / cancelled by admin.
   function deleteMenu(task) {
     const menu = h("div", "del-menu");
-    menu.append(h("span", "del-question", "Delete “" + task.title + "”?"));
+    menu.append(h("span", "del-question", (isAdmin() ? "Delete or stop" : "Stop") + " “" + task.title + "”?"));
     menu.setAttribute("role", "menu");
     const span = nowSpan();
-    if (span) {
+    if (isAdmin() && span) {
       const once = h("button", "del-option", "Delete for " + span.word);
       once.type = "button";
       once.title = "It comes back " + span.next;
       once.addEventListener("click", () => skipTask(task, span));
       menu.append(once);
     }
-    const forever = h("button", "del-option del-forever", "Delete permanently");
-    forever.type = "button";
-    forever.title = "Remove this task and its history for good";
-    forever.addEventListener("click", () => {
-      if (!forever.classList.contains("armed")) {
-        forever.classList.add("armed");
-        forever.textContent = "Sure? Delete permanently";
-        return;
-      }
-      deleteMenuFor = null;
-      deleteTask(task);
-    });
-    const cancel = h("button", "del-option del-cancel", "Cancel");
+    if (isAdmin()) {
+      const forever = h("button", "del-option del-forever", "Delete permanently");
+      forever.type = "button";
+      forever.title = "Remove this task and its history for good";
+      forever.addEventListener("click", () => {
+        if (!forever.classList.contains("armed")) {
+          forever.classList.add("armed");
+          forever.textContent = "Sure? Delete permanently";
+          return;
+        }
+        deleteMenuFor = null;
+        deleteTask(task);
+      });
+      menu.append(forever);
+    }
+    const option = (label, cls, title, state) => {
+      const b = h("button", "del-option " + cls, label);
+      b.type = "button";
+      b.title = title;
+      b.addEventListener("click", () => setTaskState(task, state));
+      menu.append(b);
+    };
+    if (!task.state) {
+      option("Paused by admin", "del-held", "Stops the task until the admin resumes it; nothing goes to Pending meanwhile", "paused");
+      option("Cancelled by admin", "del-held", "Ends the task from tomorrow; its history is kept", "cancelled");
+    } else if (isAdmin()) {
+      option(task.state === "paused" ? "Resume task" : "Restore task", "del-resume", task.state === "paused" ? "The task starts again from today" : "Undo the cancellation", null);
+    } else {
+      menu.append(h("span", "del-note", HELD_LABEL[task.state] + ". Only the admin can undo this."));
+    }
+    const cancel = h("button", "del-option del-cancel", "Close");
     cancel.type = "button";
     cancel.addEventListener("click", () => {
       deleteMenuFor = null;
       render();
     });
-    menu.append(forever, cancel);
+    menu.append(cancel);
     return menu;
+  }
+
+  async function setTaskState(task, state) {
+    deleteMenuFor = null;
+    const before = { state: task.state, state_on: task.state_on };
+    Object.assign(task, { state, state_on: state ? todayStr : null });
+    render();
+    try {
+      await store.setTaskState(task.id, state);
+      showToast(state ? "“" + task.title + "”: " + HELD_LABEL[state].toLowerCase() + "." : "“" + task.title + "” is active again.");
+    } catch (e) {
+      Object.assign(task, before);
+      if (!handleAuthError(e)) showToast("Couldn't save: " + e.message);
+    }
+    refresh();
   }
 
   async function skipTask(task, span) {
@@ -1890,8 +1964,9 @@
       const tr = document.createElement("tr");
       const key = occurrenceKey(task, selectedDate);
       const entry = entryFor(task);
-      const editable = isCurrent(task);
+      const editable = isCurrent(task) && !task.state;
       const status = statusFor(task) === "in_progress" && isPaused(entry) ? "paused" : statusFor(task);
+      if (task.state) tr.classList.add("row-held");
 
       const num = h("td", "num", i + 1);
       const title = h("td", "title");
@@ -1900,7 +1975,7 @@
       if (due) title.append(h("span", "task-due", due));
 
       const st = h("td", "status-cell");
-      st.append(h("span", "pill status-" + status, STATUS_LABEL[status]));
+      st.append(task.state ? h("span", "pill status-held", HELD_LABEL[task.state]) : h("span", "pill status-" + status, STATUS_LABEL[status]));
 
       const actions = h("td", "actions");
       actions.append(rowTools(task, i, list));
@@ -1950,7 +2025,9 @@
     const st = h("td", "status-cell");
     const status = listStatus(task, monthly ? "monthly" : "weekly");
     const missed = occ.some((o) => o.state === "missed");
-    st.append(h("span", "pill status-" + (status !== "done" && missed ? "overdue" : status), occ.length ? done + " of " + occ.length + " done" : "Starts next " + (monthly ? "month" : "week")));
+    if (task.state) tr.classList.add("row-held");
+    if (task.state) st.append(h("span", "pill status-held", HELD_LABEL[task.state]));
+    else st.append(h("span", "pill status-" + (status !== "done" && missed ? "overdue" : status), occ.length ? done + " of " + occ.length + " done" : "Starts next " + (monthly ? "month" : "week")));
     const taken = h("td", "taken-cell");
     taken.dataset.label = "Taken";
     const mins = occ.reduce((sum, o) => sum + (o.entry.end_time ? minutesTaken(o.entry, false) || 0 : 0), 0);
@@ -2086,7 +2163,7 @@
       const list = listFor(name, "daily");
       const c = countStatuses(list);
       done += c.done;
-      total += list.length;
+      total += c.total;
       const all = tasksFor(name);
       const now = all.filter((t) => statusOf(entryFor(t)) === "in_progress" && !isPaused(entryFor(t)));
       running += now.length;
@@ -2800,6 +2877,7 @@
       return;
     }
     applyTeam(teamUsers);
+    if (document.activeElement !== el.adminNewUsername) el.adminNewUsername.value = adminLoginName;
   }
 
   function applyTeam(users) {
@@ -2822,6 +2900,29 @@
         const text = h("div");
         text.append(h("strong", "", u.name), h("span", "team-state " + (u.has_password ? "is-set" : "is-missing"), u.has_password ? "Password set" : "No password yet: can't sign in"));
         who.append(av, text);
+
+        const userForm = h("form", "team-pass");
+        userForm.autocomplete = "off";
+        const userInput = document.createElement("input");
+        userInput.type = "text";
+        userInput.minLength = 2;
+        userInput.maxLength = 100;
+        userInput.required = true;
+        userInput.value = u.username || u.name;
+        userInput.setAttribute("aria-label", "Username for " + u.name);
+        userInput.title = "Username";
+        const userSave = h("button", "btn-secondary", "Save username");
+        userSave.type = "submit";
+        userForm.append(userInput, userSave);
+        userForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          try {
+            applyTeam(await store.setUsername(u.name, userInput.value.trim()));
+            showToast(u.name + "'s username is now “" + userInput.value.trim() + "”.");
+          } catch (err) {
+            if (!handleAuthError(err)) showToast("Couldn't save: " + err.message);
+          }
+        });
 
         const form = h("form", "team-pass");
         form.autocomplete = "off";
@@ -2866,11 +2967,29 @@
           }
         });
 
-        row.append(who, form, remove);
+        row.append(who, userForm, form, remove);
         return row;
       })
     );
   }
+
+  let adminLoginName = "admin";
+  el.adminLoginForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const res = await store.setAdminLogin({
+        username: el.adminNewUsername.value.trim(),
+        new_password: el.adminNewPassword.value,
+        current_password: el.adminCurrentPassword.value,
+      });
+      adminLoginName = res.admin_username;
+      el.adminNewPassword.value = "";
+      el.adminCurrentPassword.value = "";
+      showToast("Admin sign-in saved. Username: " + adminLoginName + ".");
+    } catch (err) {
+      if (!handleAuthError(err)) showToast("Couldn't save: " + err.message);
+    }
+  });
 
   el.addUserForm.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -3293,6 +3412,8 @@
     if (focus) setTimeout(() => focus.focus(), 0);
   }
 
+  let chosenPerson = null;
+
   // Step 1 on the team site: choose your name. Step 2: username + password.
   function renderPeople(users) {
     el.people.replaceChildren(
@@ -3306,7 +3427,8 @@
         b.addEventListener("click", () => {
           paintAvatar(el.authAvatar, u.name, false);
           el.authUserTitle.textContent = "Hi " + u.name;
-          el.userLogin.value = u.name;
+          chosenPerson = u.name;
+          el.userLogin.value = "";
           el.userPassword.value = "";
           el.userError.textContent = "";
           showAuthStep("user");
@@ -3339,7 +3461,7 @@
       el.userPassword.value = "";
       el.userError.textContent = idleNote;
       idleSignedOut = false;
-      return showAuthStep(idleNote && el.userLogin.value ? "user" : "people");
+      return showAuthStep(idleNote && chosenPerson ? "user" : "people");
     }
     await enterApp(s);
   }
@@ -3357,6 +3479,7 @@
     idleSignedOut = false;
     me = s.user;
     trackingStart = s.tracking_start || todayStr;
+    if (s.admin_username) adminLoginName = s.admin_username;
     el.auth.hidden = true;
     el.app.hidden = false;
     paintAvatar(el.userAvatar, me.name, isAdmin());
@@ -3402,7 +3525,7 @@
     e.preventDefault();
     el.userError.textContent = "";
     try {
-      await applySession(await store.userLogin(el.userLogin.value.trim(), el.userPassword.value));
+      await applySession(await store.userLogin(el.userLogin.value.trim(), el.userPassword.value, chosenPerson));
     } catch (err) {
       el.userError.textContent = err.message;
       el.userPassword.select();

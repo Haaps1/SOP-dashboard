@@ -317,6 +317,14 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 .del-forever { color: var(--todo); }
 .del-forever:hover, .del-forever.armed { background: var(--todo-bg); }
 .del-cancel { color: var(--muted); border-color: transparent; background: none; }
+.del-held { color: #93c5fd; }
+.del-held:hover { background: rgba(147, 197, 253, 0.12); }
+.del-resume { color: var(--done); }
+.del-resume:hover { background: var(--done-bg); }
+.del-note { color: var(--muted); font-size: 13px; }
+.status-held { color: #93c5fd; background: rgba(147, 197, 253, 0.12); }
+.row-held .title > span:first-child { color: var(--muted); }
+.row-held:has(.status-held) .title > span:first-child { text-decoration: none; }
 .btn-tool {
   width: 30px; height: 30px;
   background: none; border: none; color: var(--muted);
@@ -578,7 +586,7 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 
 .team-list { display: flex; flex-direction: column; }
 .team-row {
-  display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 340px) auto;
+  display: grid; grid-template-columns: minmax(160px, 1fr) minmax(0, 280px) minmax(0, 300px) auto;
   align-items: center; gap: 12px;
   padding: 12px 0; border-bottom: 1px solid var(--border);
 }
@@ -590,7 +598,8 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 .team-state.is-missing { color: var(--progress); }
 .team-pass { display: flex; gap: 8px; }
 .team-pass input { flex: 1; }
-.team-pass .btn-secondary { min-width: 118px; }
+.team-pass .btn-secondary { min-width: 0; white-space: nowrap; }
+.team-pass input { min-width: 0; }
 .toast-error { border-color: var(--todo); }
 
 /* ---- Per-person section tabs: Daily / Weekly / Monthly / Pending / Reminders ---- */
@@ -859,7 +868,7 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
   .calendar { right: auto; left: 0; }
   .today-weekday { font-size: 17px; }
   .team-row { grid-template-columns: 1fr auto; }
-  .team-pass { grid-column: 1 / -1; grid-row: 2; }
+  .team-pass { grid-column: 1 / -1; }
   .auth-card { padding: 22px 18px; }
   .report-controls .field { flex: 1 1 140px; }
   .assign-form .btn-primary { width: 100%; }
