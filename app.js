@@ -1473,14 +1473,22 @@
       c.append(h("strong", "", n), h("span", "", label));
       return c;
     };
-    el.videoSummary.replaceChildren(
-      chip(thisMonth.length, "Shoots this month"),
-      chip(thisMonth.reduce((n, sh) => n + sh.raw_count, 0), "Raw videos this month"),
+    const flow = [
       chip(vids.filter((v) => ["assigned", "editing", "changes"].includes(v.status)).length, "Being edited", "status-in_progress"),
       chip(vids.filter((v) => v.status === "review").length, "Waiting for approval", "status-todo"),
       chip(approved.length, "Approved this month", "status-done"),
       chip(vids.filter((v) => v.status === "approved" && !v.posted_at).length, "Ready to post", "status-in_progress"),
       chip(vids.filter((v) => v.posted_at && v.posted_at.slice(0, 10) >= month).length, "Posted this month", "status-done"),
+    ];
+    // The poster only needs the flow counts; shoots and per-editor numbers
+    // are for the video team and the admin.
+    if (videoWho() === videoTeam.poster && !videoTeam.editors.includes(videoTeam.poster) && videoTeam.poster !== videoTeam.shooter) {
+      return el.videoSummary.replaceChildren(...flow);
+    }
+    el.videoSummary.replaceChildren(
+      chip(thisMonth.length, "Shoots this month"),
+      chip(thisMonth.reduce((n, sh) => n + sh.raw_count, 0), "Raw videos this month"),
+      ...flow,
       ...videoTeam.editors.map((ed) => chip(videosDoneToday(ed).length, "Done today by " + ed)),
       ...videoTeam.editors.map((ed) => chip(approved.filter((v) => v.editor === ed).length, "Approved, edited by " + ed))
     );
