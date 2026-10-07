@@ -445,7 +445,7 @@
   // -------------------------------------------------------------------------
   // Data stores. Both expose the same interface:
   //   getSession()                    -> { site_ok, user, users, today, tracking_start }
-  //   siteLogin(password), userLogin(name, password), switchUser(), logout()
+  //   userLogin(name, password), adminLogin(username, password), logout()
   //   init()                          -> admin: apply seed version
   //   listTasks(), listEntries(dates), listEntriesRange(from, to), listNotes(date)
   //   listWorkDates(employee, from, to)
@@ -498,7 +498,7 @@
       getSession: () => call("session"),
       siteLogin: (password) => call("siteLogin", { password }),
       userLogin: (name, password) => call("userLogin", { name, password }),
-      adminLogin: (password) => call("adminLogin", { password }),
+      adminLogin: (username, password) => call("adminLogin", { username, password }),
       switchUser: () => call("switchUser"),
       logout: () => call("logout"),
       init: () => call("init", { version: SEED_VERSION, tasks: seedRows(), employees: window.EMPLOYEES }),
@@ -660,21 +660,15 @@
         return payload();
       },
       async userLogin(name, password) {
-        if (!me().site_ok) throw apiError("Enter the dashboard password first.", "site_login");
-        if (name.toLowerCase() === "admin") {
-          throw apiError("Admin signs in from the admin address.");
-        } else {
-          const u = activeUsers().find((x) => x.name === name);
-          if (!u) throw apiError("That person is no longer on the team.");
-          if (!u.password) throw apiError("No password has been set for " + name + " yet. Ask the admin to set one.");
-          if (password !== u.password) throw apiError("Wrong password.", "wrong_password");
-          setSession({ site_ok: true, role: "employee", name });
-        }
+        const norm = (x) => String(x).replace(/\s+/g, "").toLowerCase();
+        const u = activeUsers().find((x) => norm(x.name) === norm(name));
+        if (!u || !u.password || password !== u.password) throw apiError("Wrong username or password.", "wrong_password");
+        setSession({ site_ok: true, role: "employee", name: u.name });
         save();
         return payload();
       },
-      async adminLogin(password) {
-        if (password !== DEMO.admin) throw apiError("Wrong password.", "wrong_password");
+      async adminLogin(username, password) {
+        if (String(username).trim().toLowerCase() !== "admin" || password !== DEMO.admin) throw apiError("Wrong username or password.", "wrong_password");
         setSession({ site_ok: true, role: "admin" });
         save();
         return payload();
@@ -932,10 +926,9 @@
   const el = {
     app: $("app"),
     auth: $("auth"),
-    authSite: $("auth-site"),
-    authPeople: $("auth-people"),
     authUser: $("auth-user"),
     authAdmin: $("auth-admin"),
+    adminUsername: $("admin-username"),
     adminPassword: $("admin-password"),
     adminError: $("admin-error"),
     greeting: $("greeting"),
@@ -944,10 +937,9 @@
     progressMain: $("progress-main"),
     progressSub: $("progress-sub"),
     clock: $("clock"),
-    sitePassword: $("site-password"),
-    siteError: $("site-error"),
+    userLogin: $("user-login"),
+    authPeople: $("auth-people"),
     people: $("people"),
-    authLock: $("auth-lock"),
     authBack: $("auth-back"),
     authAvatar: $("auth-avatar"),
     authUserTitle: $("auth-user-title"),
@@ -3290,40 +3282,38 @@
 
   // ---- Sign-in ----------------------------------------------------------------
 
-  let chosenPerson = null; // name picked on step 2, or "Admin"
-
   function showAuthStep(step) {
     el.app.hidden = true;
     el.auth.hidden = false;
-    el.authSite.hidden = step !== "site";
     el.authPeople.hidden = step !== "people";
     el.authUser.hidden = step !== "user";
     el.authAdmin.hidden = step !== "admin";
     const focus =
-      step === "site" ? el.sitePassword : step === "user" ? el.userPassword : step === "admin" ? el.adminPassword : el.people.querySelector("button");
+      step === "people" ? el.people.querySelector("button") : step === "admin" ? (el.adminUsername.value ? el.adminPassword : el.adminUsername) : el.userLogin.value ? el.userPassword : el.userLogin;
     if (focus) setTimeout(() => focus.focus(), 0);
   }
 
+  // Step 1 on the team site: choose your name. Step 2: username + password.
   function renderPeople(users) {
-    const person = (name, isAdminChoice, note) => {
-      const b = h("button", "person" + (isAdminChoice ? " person-admin" : ""));
-      b.type = "button";
-      const av = h("span", "avatar avatar-lg");
-      paintAvatar(av, name, isAdminChoice);
-      b.append(av, h("span", "person-name", name));
-      if (note) b.append(h("span", "person-note", note));
-      b.addEventListener("click", () => {
-        chosenPerson = name;
-        paintAvatar(el.authAvatar, name, isAdminChoice);
-        el.authUserTitle.textContent = isAdminChoice ? "Admin sign-in" : "Hi " + name;
-        el.userPassword.value = "";
-        el.userError.textContent = "";
-        showAuthStep("user");
-      });
-      return b;
-    };
-    // Admin isn't listed here: the admin signs in at the admin address.
-    el.people.replaceChildren(...users.map((u) => person(u.name, false, u.has_password ? "" : "No password yet")));
+    el.people.replaceChildren(
+      ...users.map((u) => {
+        const b = h("button", "person");
+        b.type = "button";
+        const av = h("span", "avatar avatar-lg");
+        paintAvatar(av, u.name, false);
+        b.append(av, h("span", "person-name", u.name));
+        if (!u.has_password) b.append(h("span", "person-note", "No password yet"));
+        b.addEventListener("click", () => {
+          paintAvatar(el.authAvatar, u.name, false);
+          el.authUserTitle.textContent = "Hi " + u.name;
+          el.userLogin.value = u.name;
+          el.userPassword.value = "";
+          el.userError.textContent = "";
+          showAuthStep("user");
+        });
+        return b;
+      })
+    );
   }
 
   // Show whichever sign-in step this browser is on, or open the dashboard.
@@ -3343,17 +3333,13 @@
       }
       return enterApp(s);
     }
-    if (!s.site_ok) {
-      me = null;
-      el.sitePassword.value = "";
-      el.siteError.textContent = idleNote;
-      idleSignedOut = false;
-      return showAuthStep("site");
-    }
     if (!s.user) {
       me = null;
-      renderPeople(s.users);
-      return showAuthStep("people");
+      renderPeople(s.users || []);
+      el.userPassword.value = "";
+      el.userError.textContent = idleNote;
+      idleSignedOut = false;
+      return showAuthStep(idleNote && el.userLogin.value ? "user" : "people");
     }
     await enterApp(s);
   }
@@ -3376,7 +3362,7 @@
     paintAvatar(el.userAvatar, me.name, isAdmin());
     el.userName.textContent = me.name;
     el.userRole.hidden = !isAdmin();
-    el.switchUser.hidden = isAdmin(); // the admin site has only one sign-in
+    el.switchUser.hidden = true; // one sign-in step: Lock signs out
 
     if (isAdmin()) {
       try {
@@ -3412,24 +3398,12 @@
     if (active === REPORTS) loadDetail();
   }
 
-  el.authSite.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    el.siteError.textContent = "";
-    try {
-      await applySession(await store.siteLogin(el.sitePassword.value));
-    } catch (err) {
-      el.siteError.textContent = err.message;
-      el.sitePassword.select();
-    }
-  });
-
   el.authUser.addEventListener("submit", async (e) => {
     e.preventDefault();
     el.userError.textContent = "";
     try {
-      await applySession(await store.userLogin(chosenPerson, el.userPassword.value));
+      await applySession(await store.userLogin(el.userLogin.value.trim(), el.userPassword.value));
     } catch (err) {
-      if (err.code === "site_login") return reloadSession();
       el.userError.textContent = err.message;
       el.userPassword.select();
     }
@@ -3439,12 +3413,13 @@
     e.preventDefault();
     el.adminError.textContent = "";
     try {
-      await applySession(await store.adminLogin(el.adminPassword.value));
+      await applySession(await store.adminLogin(el.adminUsername.value.trim(), el.adminPassword.value));
     } catch (err) {
       el.adminError.textContent = err.message;
       el.adminPassword.select();
     }
   });
+
 
   el.authBack.addEventListener("click", () => showAuthStep("people"));
 
@@ -3475,7 +3450,6 @@
   });
   el.switchUser.addEventListener("click", () => signOut("switchUser"));
   el.lock.addEventListener("click", () => signOut("logout"));
-  el.authLock.addEventListener("click", () => signOut("logout"));
 
   // Preview only: switching between the team and admin side (#admin) reloads.
   if (config.backend !== "php") window.addEventListener("hashchange", () => location.reload());
@@ -3488,9 +3462,8 @@
     if (store.mode === "local") {
       showBanner(
         MODE === "admin"
-          ? "Preview of the admin site: data is saved in this browser only. Admin password: " + DEMO.admin
-          : "Preview mode: data is saved in this browser only. Dashboard password: " + DEMO.site +
-              " · Employee password: " + DEMO.employee + " · Admin preview: add #admin to the address"
+          ? "Preview of the admin site: data is saved in this browser only. Username: admin · Password: " + DEMO.admin
+          : "Preview mode: data is saved in this browser only. Username: your name · Password: " + DEMO.employee + " · Admin preview: add #admin to the address"
       );
     }
     try {

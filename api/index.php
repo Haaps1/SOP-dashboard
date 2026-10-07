@@ -72,10 +72,11 @@ $config = require $configFile;
 if (!is_array($config) || ($config['db_name'] ?? '') === '' || ($config['db_user'] ?? '') === '') {
     fail('Fill in your database details in api/config.php.', 500);
 }
-if (!is_string($config['site_password'] ?? null) || $config['site_password'] === ''
-    || !is_string($config['admin_password'] ?? null) || $config['admin_password'] === '') {
-    fail("Set 'site_password' and 'admin_password' in api/config.php.", 500);
+if (!is_string($config['admin_password'] ?? null) || $config['admin_password'] === '') {
+    fail("Set 'admin_password' in api/config.php.", 500);
 }
+// The admin's username; optional 'admin_username' in config.php, default "admin".
+define('ADMIN_USERNAME', is_string($config['admin_username'] ?? null) && trim($config['admin_username']) !== '' ? trim($config['admin_username']) : 'admin');
 date_default_timezone_set($config['timezone'] ?? 'Asia/Kolkata');
 // Sign people out after this many minutes without any activity (mouse,
 // keyboard or touch in the page; the dashboard's background checks for
@@ -467,6 +468,13 @@ function record_failed_login(PDO $db): void
     $db->prepare('INSERT INTO login_attempts (ip) VALUES (?)')->execute([client_ip()]);
 }
 
+// Usernames match ignoring case and spaces ("Manju Designer" = "manjudesigner").
+function same_username(string $a, string $b): bool
+{
+    $norm = fn($s) => mb_strtolower(preg_replace('/\s+/u', '', $s));
+    return $norm($a) === $norm($b);
+}
+
 // Passwords in config.php may be plain text or a password_hash() value.
 function config_password_matches(string $given, string $configured): bool
 {
@@ -503,15 +511,18 @@ function ensure_users(PDO $db): void
 
 function session_payload(PDO $db, ?array $s): array
 {
-    $siteOk = $s && (int) $s['site_ok'] === 1;
+    // Sign-in is one step now (username + password), so there is no
+    // separate dashboard password and no list of names.
+    $siteOk = true;
     $user = null;
-    if ($siteOk && $s['role'] === 'admin' && ADMIN_ENTRY) {
+    if ($s && $s['role'] === 'admin' && ADMIN_ENTRY) {
         $user = ['role' => 'admin', 'name' => ADMIN_NAME];
-    } elseif ($siteOk && $s['role'] === 'employee' && $s['user_name'] !== null && !ADMIN_ENTRY) {
+    } elseif ($s && $s['role'] === 'employee' && $s['user_name'] !== null && !ADMIN_ENTRY) {
         $user = ['role' => 'employee', 'name' => $s['user_name']];
     }
+    // The team site lists people to choose from (names only).
     $users = [];
-    if ($siteOk && !ADMIN_ENTRY) {
+    if (!ADMIN_ENTRY) {
         ensure_users($db);
         $users = user_list($db);
     }
@@ -635,14 +646,16 @@ switch ($action) {
         respond(200, ['data' => session_payload($db, $session)]);
 
     case 'adminLogin':
-        // The admin site asks for the admin password only.
+        // The admin site asks for the admin username and password.
         if (!ADMIN_ENTRY) {
             fail('Sign in as admin from the admin address.', 403);
         }
         check_rate_limit($db);
-        if (!config_password_matches(password_param($input), $config['admin_password'])) {
+        $username = is_string($input['username'] ?? null) ? $input['username'] : '';
+        $passOk = config_password_matches(password_param($input), $config['admin_password']);
+        if (!same_username($username, ADMIN_USERNAME) || !$passOk) {
             record_failed_login($db);
-            fail('Wrong password.', 401, 'wrong_password');
+            fail('Wrong username or password.', 401, 'wrong_password');
         }
         if ($session) {
             $db->prepare('DELETE FROM sessions WHERE token_hash = ?')->execute([$session['token_hash']]);
@@ -656,33 +669,28 @@ switch ($action) {
         if (ADMIN_ENTRY) {
             fail('Please sign in.', 401, 'admin_login');
         }
-        if (!$session || (int) $session['site_ok'] !== 1) {
-            fail('Enter the dashboard password first.', 401, 'site_login');
-        }
+        // Username (the person's name on the Team page) + their password.
         check_rate_limit($db);
         $name = str_param($input, 'name', 100);
         $password = password_param($input);
-        if (strcasecmp($name, ADMIN_NAME) === 0) {
-            fail('Admin signs in from the admin address.', 403);
-        } else {
-            $q = $db->prepare('SELECT id, password_hash FROM users WHERE name = ? AND active = 1');
-            $q->execute([$name]);
-            $u = $q->fetch();
-            if (!$u) {
-                fail('That person is no longer on the team.', 404);
+        ensure_users($db);
+        $u = null;
+        foreach ($db->query('SELECT id, name, password_hash FROM users WHERE active = 1')->fetchAll() as $row) {
+            if (same_username($row['name'], $name)) {
+                $u = $row;
+                break;
             }
-            if ($u['password_hash'] === null) {
-                fail('No password has been set for ' . $name . ' yet. Ask the admin to set one.', 403, 'no_password');
-            }
-            if (!password_verify($password, $u['password_hash'])) {
-                record_failed_login($db);
-                fail('Wrong password.', 401, 'wrong_password');
-            }
-            $role = 'employee';
-            $userId = (int) $u['id'];
         }
+        if (!$u || $u['password_hash'] === null || !password_verify($password, $u['password_hash'])) {
+            record_failed_login($db);
+            fail('Wrong username or password.', 401, 'wrong_password');
+        }
+        $role = 'employee';
+        $userId = (int) $u['id'];
         // New token on every sign-in (prevents session fixation).
-        $db->prepare('DELETE FROM sessions WHERE token_hash = ?')->execute([$session['token_hash']]);
+        if ($session) {
+            $db->prepare('DELETE FROM sessions WHERE token_hash = ?')->execute([$session['token_hash']]);
+        }
         $session = create_session($db);
         $db->prepare('UPDATE sessions SET role = ?, user_id = ? WHERE token_hash = ?')->execute([$role, $userId, $session['token_hash']]);
         $session = load_session_by_hash($db, $session['token_hash']);

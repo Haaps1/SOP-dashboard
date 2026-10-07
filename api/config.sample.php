@@ -12,10 +12,9 @@ return [
     'db_pass' => '',
     'timezone' => 'Asia/Kolkata',
 
-    // Step 1 of signing in: the password everyone types to open the dashboard.
-    'site_password' => '',
-
-    // The admin's own password (choose "Admin" on the sign-in screen).
-    // Employee passwords are set by the admin inside the dashboard.
+    // The admin site (admin.haaps.co.in or /admin) asks for this username and
+    // password. Employees sign in with their name and the password the admin
+    // sets for them on the Team page.
+    'admin_username' => 'admin',
     'admin_password' => '',
 ];
