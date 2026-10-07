@@ -75,8 +75,13 @@
     return "todo";
   }
 
-  const STATUS_LABEL = { todo: "To Do", in_progress: "In Progress", done: "Done", overdue: "Overdue", excused: "Excused" };
-  const EMPTY_ENTRY = Object.freeze({ start_time: null, end_time: null, started_on: null, ended_on: null, quantity: null, skipped: false });
+  // Started, not finished, and the clock is stopped.
+  function isPaused(entry) {
+    return Boolean(entry.start_time && !entry.end_time && entry.worked_sec != null && !entry.resumed_at);
+  }
+
+  const STATUS_LABEL = { todo: "To Do", in_progress: "In Progress", paused: "Paused", done: "Done", overdue: "Overdue", excused: "Excused" };
+  const EMPTY_ENTRY = Object.freeze({ start_time: null, end_time: null, started_on: null, ended_on: null, quantity: null, skipped: false, worked_sec: null, resumed_at: null });
   const OVERVIEW = "\u0000overview";
   const TEAM = "\u0000team";
   const REPORTS = "\u0000reports";
@@ -87,7 +92,10 @@
   // 1st = 1, 2nd = 2, 3rd = 4 ...). A date on a Saturday moves to the Friday
   // before, a Sunday to the Monday after. On those dates they're part of the
   // daily list; the monthly list shows the whole month.
-  const FREQ_LABEL = { daily: "Daily", weekly: "Weekly", monthly: "Monthly", weekdays: "Set days", monthdays: "Set dates" };
+  // "monthstart" tasks are worked on over the first working days of the month
+  // (due_day = how many Monday-Friday days, e.g. 6). They're in the daily list
+  // on each of those days with one record for the month, so they don't reset.
+  const FREQ_LABEL = { daily: "Daily", weekly: "Weekly", monthly: "Monthly", weekdays: "Set days", monthdays: "Set dates", monthstart: "Start of month" };
   const SHORT_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const VIEWS = [
     { key: "daily", label: "Daily Tasks" },
@@ -114,6 +122,13 @@
   // `running` is allowed. Returns null when there is nothing to measure.
   function minutesTaken(entry, running) {
     if (!entry.start_time) return null;
+    if (entry.worked_sec != null) {
+      // Paused work doesn't count: finished stretches plus the running one.
+      if (!entry.end_time && !running) return null;
+      let sec = entry.worked_sec;
+      if (!entry.end_time && entry.resumed_at) sec += Math.max(0, (new Date() - atTime(...entry.resumed_at.split(" "))) / 1000);
+      return Math.round(sec / 60);
+    }
     if (entry.started_on) {
       const start = atTime(entry.started_on, entry.start_time);
       let end;
@@ -280,14 +295,25 @@
   // monthly tasks. Times are recorded against the occurrence's key date.
   function occurrenceKey(task, date) {
     if (task.frequency === "weekly") return weekStart(date);
-    if (task.frequency === "monthly") return monthStart(date);
+    if (task.frequency === "monthly" || task.frequency === "monthstart") return monthStart(date);
     return date;
   }
 
   function dueDate(task, key) {
     if (task.frequency === "weekly") return addDays(key, (task.due_day || 1) - 1);
     if (task.frequency === "monthly") return addDays(key, Math.min(task.due_day || 1, daysInMonth(key)) - 1);
+    if (task.frequency === "monthstart") return windowEnd(key, task.due_day || 1);
     return key;
+  }
+
+  // The last of the first n Monday-Friday days of a month (key = its 1st):
+  // each Saturday or Sunday in between adds a day.
+  function windowEnd(key, n) {
+    let d = key;
+    for (let left = n; ; d = addDays(d, 1)) {
+      const wd = parseYmd(d).getDay();
+      if (wd !== 0 && wd !== 6 && --left === 0) return d;
+    }
   }
 
   // Day of the week, Monday = 1 ... Sunday = 7.
@@ -336,11 +362,16 @@
   }
 
   function scheduledOn(task, date) {
+    if (task.frequency === "monthstart") return date <= dueDate(task, monthStart(date)) && WORK_DAYS.includes(parseYmd(date).getDay());
     if (task.frequency === "monthdays") return monthDates(task, monthStart(date)).includes(date);
     return task.frequency === "weekdays" && Boolean(task.due_day & (1 << (isoDay(date) - 1)));
   }
 
   function dueLabel(task) {
+    if (task.frequency === "monthstart") {
+      const n = task.due_day || 1;
+      return "First " + n + " working " + (n === 1 ? "day" : "days") + " of the month · by " + dayDate(dueDate(task, monthStart(selectedDate)));
+    }
     if (task.frequency === "monthdays") {
       const list = maskDates(task.due_day || 0).map(ordinal);
       return "On the " + (list.length > 1 ? list.slice(0, -1).join(", ") + " & " + list[list.length - 1] : list[0]) + " (not Sat/Sun)";
@@ -539,6 +570,7 @@
       if (frequency === "daily") return { frequency, due_day: null };
       if (frequency === "weekdays") return { frequency, due_day: Math.min(Math.max(Number(row.due_day) || 1, 1), 127) };
       if (frequency === "monthdays") return { frequency, due_day: Math.min(Math.max(Number(row.due_day) || 1, 1), 2147483647) };
+      if (frequency === "monthstart") return { frequency, due_day: Math.min(Math.max(Number(row.due_day) || 1, 1), 20) };
       const due = Number(row.due_day ?? (current && current.frequency === frequency ? current.due_day : 1)) || 1;
       return { frequency, due_day: Math.min(Math.max(due, 1), frequency === "weekly" ? 7 : 31) };
     }
@@ -671,14 +703,26 @@
         if (date > today()) throw apiError("That day hasn't started yet.");
         const e = entry(taskId, date);
         // Write-once, stamped with this device's clock.
-        if (!e.start_time && times.start_time) Object.assign(e, { start_time: nowHHMM(), started_on: today() });
+        const nowDt = () => today() + " " + nowHHMM();
+        const running = () =>
+          e.worked_sec == null
+            ? Math.max(0, Math.round((new Date() - atTime(e.started_on || date, e.start_time)) / 1000))
+            : e.resumed_at
+              ? Math.max(0, Math.round((new Date() - atTime(...e.resumed_at.split(" "))) / 1000))
+              : 0;
+        if (!e.start_time && times.start_time) Object.assign(e, { start_time: nowHHMM(), started_on: today(), worked_sec: 0, resumed_at: nowDt() });
+        if (!e.end_time && e.start_time && times.pause && (e.worked_sec == null || e.resumed_at)) {
+          Object.assign(e, { worked_sec: (e.worked_sec || 0) + running(), resumed_at: null });
+        }
+        if (!e.end_time && e.start_time && times.resume && e.worked_sec != null && !e.resumed_at) e.resumed_at = nowDt();
         if (!e.end_time && times.end_time) {
-          if (!e.start_time) throw apiError("A task has to be started before it can be ended.");
+          if (!e.start_time) throw apiError("A task has to be started before it can be finished.");
+          if (e.worked_sec != null) Object.assign(e, { worked_sec: e.worked_sec + running(), resumed_at: null });
           Object.assign(e, { end_time: nowHHMM(), ended_on: today() });
         }
         e.quantity = times.quantity ?? null;
         save();
-        return { start_time: e.start_time, end_time: e.end_time, started_on: e.started_on, ended_on: e.ended_on };
+        return { start_time: e.start_time, end_time: e.end_time, started_on: e.started_on, ended_on: e.ended_on, worked_sec: e.worked_sec ?? null, resumed_at: e.resumed_at ?? null };
       },
       async skipEntry(taskId, date, skipped) {
         requireAdmin();
@@ -1114,7 +1158,7 @@
     const mine = tasksFor(name);
     if (which === "daily") return mine.filter((t) => (t.frequency || "daily") === "daily" || scheduledOn(t, date || selectedDate));
     if (which === "weekly") return mine.filter((t) => t.frequency === "weekly" || t.frequency === "weekdays");
-    if (which === "monthly") return mine.filter((t) => t.frequency === "monthly" || t.frequency === "monthdays");
+    if (which === "monthly") return mine.filter((t) => t.frequency === "monthly" || t.frequency === "monthdays" || t.frequency === "monthstart");
     return mine.filter((t) => t.frequency === which);
   }
 
@@ -1292,7 +1336,7 @@
 
   // Big "now working on" card for tasks in progress.
   function renderSpotlight(list) {
-    const running = list.filter((t) => statusOf(entryFor(t)) === "in_progress");
+    const running = list.filter((t) => statusOf(entryFor(t)) === "in_progress" && !isPaused(entryFor(t)));
     el.spotlight.hidden = running.length === 0;
     el.spotlight.replaceChildren(
       ...running.map((task) => {
@@ -1418,9 +1462,17 @@
       if (onDay && onDay !== key) wrap.append(h("span", "time-day", dayDate(onDay)));
     } else if (editable) {
       const isStart = field === "start_time";
-      const btn = h("button", "btn-stamp " + (isStart ? "btn-stamp-start" : "btn-stamp-end"), isStart ? "Start" : "End");
+      if (!isStart && entry.start_time) {
+        const paused = isPaused(entry);
+        const pause = h("button", "btn-stamp " + (paused ? "btn-stamp-resume" : "btn-stamp-pause"), paused ? "Resume" : "Pause");
+        pause.type = "button";
+        pause.setAttribute("aria-label", (paused ? "Resume " : "Pause ") + task.title);
+        pause.addEventListener("click", () => pauseTask(task, key, paused));
+        wrap.append(pause);
+      }
+      const btn = h("button", "btn-stamp " + (isStart ? "btn-stamp-start" : "btn-stamp-end"), isStart ? "Start" : "Finish");
       btn.type = "button";
-      btn.setAttribute("aria-label", (isStart ? "Start " : "End ") + task.title + " now");
+      btn.setAttribute("aria-label", (isStart ? "Start " : "Finish ") + task.title + " now");
       if (!isStart && !entry.start_time) {
         btn.disabled = true;
         btn.title = "Start the task first";
@@ -1442,8 +1494,8 @@
     if (status === "done" && mins !== null) {
       taken.textContent = formatDuration(mins);
     } else if (status === "in_progress" && mins !== null) {
-      taken.textContent = formatDuration(mins) + " so far";
-      taken.classList.add("taken-running");
+      taken.textContent = formatDuration(mins) + " so far" + (isPaused(entry) ? " · paused" : "");
+      taken.classList.add(isPaused(entry) ? "taken-paused" : "taken-running");
     } else if (status === "in_progress") {
       taken.textContent = "No end time";
       taken.classList.add("taken-none");
@@ -1554,7 +1606,9 @@
   }
 
   function dueOptions(select, frequency, selected) {
-    if (frequency === "weekly") {
+    if (frequency === "monthstart") {
+      select.replaceChildren(...Array.from({ length: 15 }, (_, i) => option(String(i + 1), "First " + (i + 1) + " working " + (i ? "days" : "day"))));
+    } else if (frequency === "weekly") {
       select.replaceChildren(...WEEKDAYS.map((d, i) => option(String(i + 1), d)));
     } else {
       select.replaceChildren(...Array.from({ length: 31 }, (_, i) => option(String(i + 1), ordinal(i + 1) + " of the month")));
@@ -1580,7 +1634,7 @@
 
     const freqField = h("label", "field");
     const freq = document.createElement("select");
-    freq.append(option("daily", "Daily"), option("weekly", "Weekly"), option("monthly", "Monthly"));
+    freq.append(option("daily", "Daily"), option("weekly", "Weekly"), option("monthly", "Monthly"), option("monthstart", "Start of month"));
     freq.value = task.frequency || "daily";
     freqField.append(h("span", "", "Type"), freq);
 
@@ -1599,7 +1653,11 @@
     if (task.frequency === "weekdays") freq.value = "weekly";
     if (task.frequency === "monthdays") freq.value = "monthly";
     const syncDue = () => {
-      dueField.hidden = true;
+      dueField.hidden = freq.value !== "monthstart";
+      if (freq.value === "monthstart") {
+        dueCaption.textContent = "Within";
+        dueOptions(due, "monthstart", task.frequency === "monthstart" ? task.due_day : 6);
+      }
       daysField.hidden = freq.value !== "weekly";
       datesField.hidden = freq.value !== "monthly";
     };
@@ -1625,6 +1683,7 @@
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const changes = { title: title.value.trim(), frequency: freq.value, employee: who.value };
+      if (freq.value === "monthstart") changes.due_day = Number(due.value);
       if (freq.value === "monthly") {
         if (!getDates().length) return showToast("Pick at least one date.");
         Object.assign(changes, freqFromDates(getDates()));
@@ -1692,7 +1751,7 @@
       const key = occurrenceKey(task, selectedDate);
       const entry = entryFor(task);
       const editable = isCurrent(task);
-      const status = statusFor(task);
+      const status = statusFor(task) === "in_progress" && isPaused(entry) ? "paused" : statusFor(task);
 
       const num = h("td", "num", i + 1);
       const title = h("td", "title");
@@ -1888,7 +1947,7 @@
       done += c.done;
       total += list.length;
       const all = tasksFor(name);
-      const now = all.filter((t) => statusOf(entryFor(t)) === "in_progress");
+      const now = all.filter((t) => statusOf(entryFor(t)) === "in_progress" && !isPaused(entryFor(t)));
       running += now.length;
       const pending = pendingFor(name);
       pendingTotal += pending.length;
@@ -2008,10 +2067,14 @@
   let getAssignDays = () => [1];
   function syncAssignDue() {
     const f = el.assignFreq.value;
-    el.assignDueField.hidden = true;
-    el.assignDaysField.hidden = f === "daily";
+    el.assignDueField.hidden = f !== "monthstart";
+    if (f === "monthstart") {
+      el.assignDueLabel.textContent = "Within";
+      dueOptions(el.assignDue, "monthstart", 6);
+    }
+    el.assignDaysField.hidden = f === "daily" || f === "monthstart";
     el.assignDaysLabel.textContent = f === "monthly" ? "Dates" : "Days";
-    if (f !== "daily") getAssignDays = dayPicker(el.assignDays, [1], f === "monthly" ? "month" : "week");
+    if (f !== "daily" && f !== "monthstart") getAssignDays = dayPicker(el.assignDays, [1], f === "monthly" ? "month" : "week");
   }
   el.assignFreq.addEventListener("change", syncAssignDue);
 
@@ -2165,7 +2228,8 @@
     const frequency = el.assignFreq.value;
     if (!title || !employee) return;
     const row = { employee, title, frequency };
-    if (frequency !== "daily") {
+    if (frequency === "monthstart") row.due_day = Number(el.assignDue.value);
+    else if (frequency !== "daily") {
       if (!getAssignDays().length) return showToast(frequency === "monthly" ? "Pick at least one date." : "Pick at least one day.");
       Object.assign(row, frequency === "monthly" ? freqFromDates(getAssignDays()) : freqFromDays(getAssignDays()));
     }
@@ -2176,7 +2240,7 @@
       return;
     }
     el.assignTitle.value = "";
-    showToast("Assigned “" + title + "” to " + employee + (row.frequency === "weekdays" || row.frequency === "monthdays" ? " (" + dueLabel(row).replace(/^\w/, (c) => c.toLowerCase()) + ")" : " as a " + FREQ_LABEL[row.frequency].toLowerCase() + " task"));
+    showToast("Assigned “" + title + "” to " + employee + (row.frequency === "weekdays" || row.frequency === "monthdays" || row.frequency === "monthstart" ? " (" + dueLabel(row).replace(/^\w/, (c) => c.toLowerCase()) + ")" : " as a " + FREQ_LABEL[row.frequency].toLowerCase() + " task"));
     refresh();
   });
 
@@ -2757,6 +2821,24 @@
         quantity: next.quantity,
       });
       if (saved) apply({ ...next, ...saved });
+      render();
+    } catch (e) {
+      if (!handleAuthError(e)) showToast("Couldn't save: " + e.message);
+      refresh();
+    }
+  }
+
+  // Pause stops the clock; Resume starts it again. Only worked time counts.
+  async function pauseTask(task, key, resume) {
+    const mapKey = task.id + "|" + key;
+    const current = entries.get(mapKey) || recent.get(mapKey) || EMPTY_ENTRY;
+    const apply = (e) => {
+      if (entries.has(mapKey) || occurrenceKey(task, selectedDate) === key) entries.set(mapKey, e);
+      if (recent.has(mapKey) || key >= pendingWindowStart()) recent.set(mapKey, e);
+    };
+    try {
+      const saved = await store.saveEntry(task.id, key, { quantity: current.quantity ?? null, [resume ? "resume" : "pause"]: true });
+      if (saved) apply({ ...current, ...saved });
       render();
     } catch (e) {
       if (!handleAuthError(e)) showToast("Couldn't save: " + e.message);

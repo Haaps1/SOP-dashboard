@@ -27,12 +27,15 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 // weekdays = set days of the week; due_day is then a bitmask (Mon = 1, Tue = 2,
 // Wed = 4 ... Sun = 64) and the task is part of the daily list on those days.
 // monthdays = set dates of the month; due_day is a bitmask of dates (1st = 1,
 // 2nd = 2, 3rd = 4 ...). Dates on a Saturday or Sunday move to Friday or Monday.
-const FREQUENCIES = ['daily', 'weekly', 'monthly', 'weekdays', 'monthdays'];
+// monthstart = done over the first working days of the month; due_day is how
+// many Monday-Friday days (e.g. 6). It is in the daily list on each of those
+// days and keeps one record for the whole month, so it doesn't reset daily.
+const FREQUENCIES = ['daily', 'weekly', 'monthly', 'weekdays', 'monthdays', 'monthstart'];
 define('ADMIN_ENTRY', defined('SOP_ADMIN_ENTRY') && SOP_ADMIN_ENTRY);
 define('SESSION_COOKIE', ADMIN_ENTRY ? 'sop_admin_session' : 'sop_session');
 const SESSION_DAYS = 30;
@@ -262,6 +265,10 @@ function ensure_schema(PDO $db): void
     add_column($db, 'task_entries', 'started_on', 'DATE NULL');
     add_column($db, 'task_entries', 'ended_on', 'DATE NULL');
     add_column($db, 'task_entries', 'skipped', 'TINYINT(1) NOT NULL DEFAULT 0');
+    // v6: pause. worked_sec is the time worked in finished stretches;
+    // resumed_at is when the current stretch began (NULL while paused).
+    add_column($db, 'task_entries', 'worked_sec', 'INT UNSIGNED NULL');
+    add_column($db, 'task_entries', 'resumed_at', 'DATETIME NULL');
     // v4: automatic sign-out after inactivity.
     add_column($db, 'sessions', 'last_active', 'DATETIME NULL');
     $db->exec("CREATE TABLE IF NOT EXISTS reminders (
@@ -320,7 +327,7 @@ function frequency_params(array $in, ?array $current = null): array
         return ['daily', null];
     }
     $due = $due === null ? 1 : (int) $due;
-    $max = ['weekly' => 7, 'weekdays' => 127, 'monthly' => 31, 'monthdays' => 2147483647][$frequency];
+    $max = ['weekly' => 7, 'weekdays' => 127, 'monthly' => 31, 'monthdays' => 2147483647, 'monthstart' => 20][$frequency];
     if ($due < 1 || $due > $max) {
         fail($frequency === 'monthly' ? 'Choose a day of the month (1-31).' : 'Choose a weekday.');
     }
@@ -751,7 +758,7 @@ switch ($action) {
     case 'listEntriesRange':
         // listEntries: the given dates (a day, a week start, a month start).
         // listEntriesRange: every entry between two dates (for pending work).
-        $cols = 'e.task_id, e.work_date, e.start_time, e.end_time, e.started_on, e.ended_on, e.quantity, e.skipped';
+        $cols = 'e.task_id, e.work_date, e.start_time, e.end_time, e.started_on, e.ended_on, e.quantity, e.skipped, e.worked_sec, e.resumed_at';
         if ($action === 'listEntries') {
             $dates = $input['dates'] ?? (isset($input['date']) ? [$input['date']] : null);
             if (!is_array($dates) || !$dates || count($dates) > 10) {
@@ -779,6 +786,7 @@ switch ($action) {
         foreach ($rows as &$r) {
             $r['quantity'] = $r['quantity'] === null ? null : (int) $r['quantity'];
             $r['skipped'] = (bool) $r['skipped'];
+            $r['worked_sec'] = $r['worked_sec'] === null ? null : (int) $r['worked_sec'];
         }
         respond(200, ['data' => $rows]);
 
@@ -896,11 +904,12 @@ switch ($action) {
         respond(200, ['data' => true]);
 
     case 'saveEntry':
-        // Start and end times are write-once and come from the server's clock:
-        // sending a start_time or end_time means "stamp it now" if it's empty.
-        // An existing time is never changed or cleared, and a task can't be
-        // ended before it is started. `date` is the task's day, or the first
-        // day of its week/month for weekly and monthly tasks.
+        // Start, pause and finish times are write-once and come from the
+        // server's clock: sending a start_time or end_time means "stamp it now"
+        // if it's empty, and pause / resume stop and restart the clock in
+        // between. An existing time is never changed or cleared, and a task
+        // can't be finished before it is started. `date` is the task's day, or
+        // the first day of its week/month for weekly and monthly tasks.
         $taskId = id_param($input, 'task_id');
         require_own_task($db, $isAdmin, $me, $taskId);
         $date = date_param($input, 'date');
@@ -910,37 +919,66 @@ switch ($action) {
         }
         $wantStart = ($input['start_time'] ?? null) !== null;
         $wantEnd = ($input['end_time'] ?? null) !== null;
+        $wantPause = !empty($input['pause']);
+        $wantResume = !empty($input['resume']);
         $qty = $input['quantity'] ?? null;
         if ($qty !== null && (!is_int($qty) || $qty < 0 || $qty > 100000)) {
             fail('Invalid quantity.');
         }
         $db->beginTransaction();
-        $cur = $db->prepare('SELECT start_time, end_time, started_on, ended_on FROM task_entries WHERE task_id = ? AND work_date = ? FOR UPDATE');
+        $cur = $db->prepare('SELECT start_time, end_time, started_on, ended_on, worked_sec, resumed_at FROM task_entries WHERE task_id = ? AND work_date = ? FOR UPDATE');
         $cur->execute([$taskId, $date]);
-        $row = $cur->fetch() ?: ['start_time' => null, 'end_time' => null, 'started_on' => null, 'ended_on' => null];
-        $now = date('H:i:s');
+        $row = $cur->fetch() ?: ['start_time' => null, 'end_time' => null, 'started_on' => null, 'ended_on' => null, 'worked_sec' => null, 'resumed_at' => null];
+        $nowTs = time();
+        $now = date('H:i:s', $nowTs);
+        $nowDt = date('Y-m-d H:i:s', $nowTs);
         $start = $row['start_time'];
         $startedOn = $row['started_on'];
         $end = $row['end_time'];
         $endedOn = $row['ended_on'];
+        $worked = $row['worked_sec'] === null ? null : (int) $row['worked_sec'];
+        $resumed = $row['resumed_at'];
+        // Seconds in the stretch that is running now. Entries started before
+        // pause existed have no worked_sec: they have run since the start.
+        $running = function () use (&$start, &$startedOn, &$worked, &$resumed, $nowTs, $date) {
+            if ($worked === null) {
+                return max(0, $nowTs - strtotime(($startedOn ?? $date) . ' ' . $start));
+            }
+            return $resumed === null ? 0 : max(0, $nowTs - strtotime($resumed));
+        };
         if ($start === null && $wantStart) {
             $start = $now;
             $startedOn = $today;
+            $worked = 0;
+            $resumed = $nowDt;
+        }
+        if ($end === null && $start !== null && $wantPause && ($worked === null || $resumed !== null)) {
+            $worked = ($worked === null ? 0 : $worked) + $running();
+            $resumed = null;
+        }
+        if ($end === null && $start !== null && $wantResume && $worked !== null && $resumed === null) {
+            $resumed = $nowDt;
         }
         if ($end === null && $wantEnd) {
             if ($start === null) {
                 $db->rollBack();
-                fail('A task has to be started before it can be ended.');
+                fail('A task has to be started before it can be finished.');
+            }
+            if ($worked !== null) {
+                $worked += $running();
+                $resumed = null;
             }
             $end = $now;
             $endedOn = $today;
         }
-        $db->prepare('INSERT INTO task_entries (task_id, work_date, start_time, end_time, started_on, ended_on, quantity) VALUES (?, ?, ?, ?, ?, ?, ?)
+        $db->prepare('INSERT INTO task_entries (task_id, work_date, start_time, end_time, started_on, ended_on, quantity, worked_sec, resumed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                       ON DUPLICATE KEY UPDATE start_time = VALUES(start_time), end_time = VALUES(end_time),
-                          started_on = VALUES(started_on), ended_on = VALUES(ended_on), quantity = VALUES(quantity)')
-            ->execute([$taskId, $date, $start, $end, $startedOn, $endedOn, $qty]);
+                          started_on = VALUES(started_on), ended_on = VALUES(ended_on), quantity = VALUES(quantity),
+                          worked_sec = VALUES(worked_sec), resumed_at = VALUES(resumed_at)')
+            ->execute([$taskId, $date, $start, $end, $startedOn, $endedOn, $qty, $worked, $resumed]);
         $db->commit();
-        respond(200, ['data' => ['start_time' => $start, 'end_time' => $end, 'started_on' => $startedOn, 'ended_on' => $endedOn]]);
+        respond(200, ['data' => ['start_time' => $start, 'end_time' => $end, 'started_on' => $startedOn, 'ended_on' => $endedOn,
+                                 'worked_sec' => $worked, 'resumed_at' => $resumed]]);
 
     case 'skipEntry':
         // Admin: excuse (or un-excuse) a missed task, e.g. for a day off.
@@ -1084,7 +1122,7 @@ switch ($action) {
         }
         $day = 'COALESCE(e.ended_on, e.started_on, e.work_date)';
         $sql = "SELECT t.employee, t.title, t.frequency, t.due_day, e.task_id, e.work_date, e.start_time, e.end_time,
-                       e.started_on, e.ended_on, e.quantity, e.skipped
+                       e.started_on, e.ended_on, e.quantity, e.skipped, e.worked_sec, e.resumed_at
                 FROM task_entries e JOIN tasks t ON t.id = e.task_id
                 WHERE $day BETWEEN ? AND ? AND (e.start_time IS NOT NULL OR e.quantity > 0 OR e.skipped = 1)";
         $params = [$from, $to];
@@ -1100,6 +1138,7 @@ switch ($action) {
             $r['due_day'] = $r['due_day'] === null ? null : (int) $r['due_day'];
             $r['quantity'] = $r['quantity'] === null ? null : (int) $r['quantity'];
             $r['skipped'] = (bool) $r['skipped'];
+            $r['worked_sec'] = $r['worked_sec'] === null ? null : (int) $r['worked_sec'];
         }
         respond(200, ['data' => ['from' => $from, 'to' => $to, 'rows' => $rows]]);
 
@@ -1120,6 +1159,7 @@ switch ($action) {
                 SUM(e.start_time IS NOT NULL) AS tasks_started,
                 SUM(e.end_time IS NOT NULL) AS tasks_done,
                 SUM(CASE WHEN e.end_time IS NULL THEN 0
+                         WHEN e.worked_sec IS NOT NULL THEN e.worked_sec
                          WHEN e.started_on IS NOT NULL AND e.ended_on IS NOT NULL
                          THEN TIMESTAMPDIFF(SECOND, TIMESTAMP(e.started_on, e.start_time), TIMESTAMP(e.ended_on, e.end_time))
                          ELSE MOD(TIME_TO_SEC(e.end_time) - TIME_TO_SEC(e.start_time) + 86400, 86400) END) DIV 60 AS minutes,

@@ -222,10 +222,12 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 
 .taken-cell { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .taken-running { color: var(--progress); font-weight: 500; }
+.taken-paused { color: #93c5fd; font-weight: 500; }
 .taken-none { color: var(--muted); font-weight: 400; }
 
 .status-todo { color: var(--todo); background: var(--todo-bg); }
 .status-in_progress { color: var(--progress); background: var(--progress-bg); }
+.status-paused { color: #93c5fd; background: rgba(147, 197, 253, 0.12); }
 .status-done { color: var(--done); background: var(--done-bg); }
 
 /* Table */
@@ -273,6 +275,10 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 .btn-stamp-start:hover { background: var(--progress); color: #0b0e14; }
 .btn-stamp-end { background: var(--done-bg); color: var(--done); border-color: rgba(34, 197, 94, 0.4); }
 .btn-stamp-end:hover { background: var(--done); color: #0b0e14; }
+.btn-stamp-pause { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+.btn-stamp-pause:hover { border-color: var(--accent); }
+.btn-stamp-resume { background: var(--progress-bg); color: var(--progress); border-color: rgba(245, 158, 11, 0.4); }
+.btn-stamp-resume:hover { background: var(--progress); color: #0b0e14; }
 .btn-stamp:disabled { background: none; color: var(--muted); border-color: var(--border); opacity: 0.5; cursor: not-allowed; }
 .btn-stamp:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .qty-value { font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -791,6 +797,7 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 .occ-today { color: var(--text); border-color: var(--accent); }
 .occ-excused { text-decoration: line-through; }
 .freq-weekdays { color: #93c5fd; border-color: rgba(147, 197, 253, 0.35); }
+.freq-monthstart { color: #c4b5fd; border-color: rgba(196, 181, 253, 0.35); }
 .freq-monthdays { color: #c4b5fd; border-color: rgba(196, 181, 253, 0.35); }
 .date-chips { display: grid; grid-template-columns: repeat(7, 38px); gap: 4px; }
 .date-chip { min-width: 0; width: 38px; height: 32px; padding: 0; font-size: 12px; }

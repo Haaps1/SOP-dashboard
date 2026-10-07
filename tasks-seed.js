@@ -13,7 +13,11 @@
 //     (in Daily Tasks on those dates; a Saturday moves to Friday and a Sunday
 //     to Monday)
 //   { title: "...", frequency: "monthly", due_day: 5 }  for a monthly task
-window.SEED_VERSION = 4;
+//   { title: "...", frequency: "monthstart", due_day: 6 }  for work done over
+//     the first 6 Monday-Friday days of the month (each Sat/Sun adds a day).
+//     It is in Daily Tasks on each of those days and keeps one record for the
+//     month (Start, Pause, Finish), and goes to Pending if not finished by then.
+window.SEED_VERSION = 5;
 
 window.EMPLOYEES = ["Anil", "Madhu", "Manju", "Harsha", "Manju Designer"];
 
@@ -42,5 +46,8 @@ window.SEED_TASKS = {
     { title: "GMB - Dr Sri Kamath", dates: [5, 20] },
     { title: "GMB - HLC", dates: [5, 20] },
     { title: "GMB - Sanyra", dates: [5, 20] },
+    { title: "Posters creation – All clients", frequency: "monthstart", due_day: 6 },
+    { title: "Reports – MedFine, HLC, Mamtha, Sanyra", frequency: "monthstart", due_day: 6 },
+    { title: "Blogs – 14 blogs (KVA, HLC, Mamtha, Sanyra)", frequency: "monthstart", due_day: 6 },
   ],
 };
