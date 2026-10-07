@@ -19,7 +19,7 @@
 //     the first 6 Monday-Friday days of the month (each Sat/Sun adds a day).
 //     It is in Daily Tasks on each of those days and keeps one record for the
 //     month (Start, Pause, Finish), and goes to Pending if not finished by then.
-window.SEED_VERSION = 9;
+window.SEED_VERSION = 10;
 
 window.EMPLOYEES = ["Anil", "Madhu", "Manju", "Harsha", "Manju Designer"];
 
@@ -42,8 +42,8 @@ window.SEED_TASKS = {
     "Social media posting – UBM",
     "Social media (content + client SM) – HAAPS.AI, HAAPS.Digital",
     { title: "GMB – HAAPS: posts + listing", days: ["Mon", "Wed", "Fri"] },
-    { title: "Website updates (plugin, theme, WordPress) + web backup – HAAPS.AI, HAAPS.Digital", frequency: "weekly", due_day: 6 },
-    { title: "Poster creation – UBM", frequency: "weekly", due_day: 6 },
+    { title: "Website updates (plugin, theme, WordPress) + web backup – HAAPS.AI, HAAPS.Digital", frequency: "weekdays", due_day: 2 },
+    { title: "Poster creation – UBM", frequency: "weekdays", due_day: 16 },
     { title: "Full website updates + backup – HAAPS.AI, HAAPS.Digital", frequency: "monthstart", due_day: 5 },
     { title: "Blogs – HAAPS", frequency: "monthstart", due_day: 5 },
     { title: "SEO & SMM report – UBM", frequency: "monthstart", due_day: 5 },
