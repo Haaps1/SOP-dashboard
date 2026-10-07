@@ -8,6 +8,8 @@
 //
 // Each entry is a task title (a daily task), or
 //   { title: "...", days: ["Mon", "Wed", "Fri"] }  for a task on set weekdays
+//   { title: "...", frequency: "weekdays", due_day: 2 }  for one set weekday that
+//     still shows in Daily Tasks (bitmask: Mon 1, Tue 2, Wed 4, Thu 8, Fri 16)
 //     (in Daily Tasks on those days; one day = a weekly task due that day)
 //   { title: "...", dates: [5, 20] }  for a task on set dates of the month
 //     (in Daily Tasks on those dates; a Saturday moves to Friday and a Sunday
@@ -17,7 +19,7 @@
 //     the first 6 Monday-Friday days of the month (each Sat/Sun adds a day).
 //     It is in Daily Tasks on each of those days and keeps one record for the
 //     month (Start, Pause, Finish), and goes to Pending if not finished by then.
-window.SEED_VERSION = 6;
+window.SEED_VERSION = 7;
 
 window.EMPLOYEES = ["Anil", "Madhu", "Manju", "Harsha", "Manju Designer"];
 
@@ -40,6 +42,12 @@ window.SEED_TASKS = {
     "GMB - Dr. Neema Bhat",
     "Video Posting + thumbnails",
     "Morning Social Media Posting",
+    // Every Tuesday: in Daily Tasks that day.
+    { title: "Website Malware", frequency: "weekdays", due_day: 2 },
+    { title: "Website Analytics + Console", frequency: "weekdays", due_day: 2 },
+    { title: "Blogs – 6 blogs (Sanyra, Dr. Varun Kumar J)", frequency: "monthstart", due_day: 5 },
+    { title: "SM Calendar", frequency: "monthstart", due_day: 5 },
+    { title: "Reports", frequency: "monthstart", due_day: 5 },
   ],
   Manju: [
     "SEO - MedFine",
