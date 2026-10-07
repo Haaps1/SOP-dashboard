@@ -27,10 +27,12 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 // weekdays = set days of the week; due_day is then a bitmask (Mon = 1, Tue = 2,
 // Wed = 4 ... Sun = 64) and the task is part of the daily list on those days.
-const FREQUENCIES = ['daily', 'weekly', 'monthly', 'weekdays'];
+// monthdays = set dates of the month; due_day is a bitmask of dates (1st = 1,
+// 2nd = 2, 3rd = 4 ...). Dates on a Saturday or Sunday move to Friday or Monday.
+const FREQUENCIES = ['daily', 'weekly', 'monthly', 'weekdays', 'monthdays'];
 define('ADMIN_ENTRY', defined('SOP_ADMIN_ENTRY') && SOP_ADMIN_ENTRY);
 define('SESSION_COOKIE', ADMIN_ENTRY ? 'sop_admin_session' : 'sop_session');
 const SESSION_DAYS = 30;
@@ -277,6 +279,10 @@ function ensure_schema(PDO $db): void
         // Tasks already named "(Weekly)" become weekly tasks due on Monday.
         $db->exec("UPDATE tasks SET frequency = 'weekly', due_day = 1 WHERE frequency = 'daily' AND title LIKE '%(Weekly)%'");
     }
+    if ((int) $v < 5) {
+        // v5: set-dates tasks keep a bitmask of up to 31 dates.
+        $db->exec('ALTER TABLE tasks MODIFY due_day INT UNSIGNED NULL');
+    }
     // Pending work is only counted from the day this version went live.
     $db->prepare("INSERT IGNORE INTO app_meta (meta_key, meta_value) VALUES ('tracking_start', ?)")->execute([date('Y-m-d')]);
 
@@ -314,7 +320,7 @@ function frequency_params(array $in, ?array $current = null): array
         return ['daily', null];
     }
     $due = $due === null ? 1 : (int) $due;
-    $max = $frequency === 'weekly' ? 7 : ($frequency === 'weekdays' ? 127 : 31);
+    $max = ['weekly' => 7, 'weekdays' => 127, 'monthly' => 31, 'monthdays' => 2147483647][$frequency];
     if ($due < 1 || $due > $max) {
         fail($frequency === 'monthly' ? 'Choose a day of the month (1-31).' : 'Choose a weekday.');
     }

@@ -791,6 +791,12 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 .occ-today { color: var(--text); border-color: var(--accent); }
 .occ-excused { text-decoration: line-through; }
 .freq-weekdays { color: #93c5fd; border-color: rgba(147, 197, 253, 0.35); }
+.freq-monthdays { color: #c4b5fd; border-color: rgba(196, 181, 253, 0.35); }
+.date-chips { display: grid; grid-template-columns: repeat(7, 38px); gap: 4px; }
+.date-chip { min-width: 0; width: 38px; height: 32px; padding: 0; font-size: 12px; }
+.add-form:has(.date-chips) { flex-wrap: wrap; align-items: flex-start; }
+.add-form:has(.date-chips) #add-input { flex: 1 1 100%; }
+.add-form .day-picker:has(.date-chips) { flex-direction: column; align-items: flex-start; }
 
 /* Phone layout: each task becomes a card. */
 @media (max-width: 720px) {

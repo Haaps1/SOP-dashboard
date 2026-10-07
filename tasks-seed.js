@@ -9,8 +9,11 @@
 // Each entry is a task title (a daily task), or
 //   { title: "...", days: ["Mon", "Wed", "Fri"] }  for a task on set weekdays
 //     (in Daily Tasks on those days; one day = a weekly task due that day)
+//   { title: "...", dates: [5, 20] }  for a task on set dates of the month
+//     (in Daily Tasks on those dates; a Saturday moves to Friday and a Sunday
+//     to Monday)
 //   { title: "...", frequency: "monthly", due_day: 5 }  for a monthly task
-window.SEED_VERSION = 3;
+window.SEED_VERSION = 4;
 
 window.EMPLOYEES = ["Anil", "Madhu", "Manju", "Harsha", "Manju Designer"];
 
@@ -31,8 +34,13 @@ window.SEED_TASKS = {
     "SEO - Mamtha",
     "SEO - Sanyra",
     "GMB - Dr Mangesh Kamath",
+    "GMB - Neema Bhat",
     "Google Ads - HLC",
     "Google Ads - Charu",
     { title: "ICE Social Media – poster creation + posting", days: ["Mon", "Wed", "Fri"] },
+    { title: "GMB - MedFine", dates: [5, 20] },
+    { title: "GMB - Dr Sri Kamath", dates: [5, 20] },
+    { title: "GMB - HLC", dates: [5, 20] },
+    { title: "GMB - Sanyra", dates: [5, 20] },
   ],
 };
