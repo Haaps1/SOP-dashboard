@@ -28,7 +28,9 @@ header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
 const SCHEMA_VERSION = 4;
-const FREQUENCIES = ['daily', 'weekly', 'monthly'];
+// weekdays = set days of the week; due_day is then a bitmask (Mon = 1, Tue = 2,
+// Wed = 4 ... Sun = 64) and the task is part of the daily list on those days.
+const FREQUENCIES = ['daily', 'weekly', 'monthly', 'weekdays'];
 define('ADMIN_ENTRY', defined('SOP_ADMIN_ENTRY') && SOP_ADMIN_ENTRY);
 define('SESSION_COOKIE', ADMIN_ENTRY ? 'sop_admin_session' : 'sop_session');
 const SESSION_DAYS = 30;
@@ -312,9 +314,9 @@ function frequency_params(array $in, ?array $current = null): array
         return ['daily', null];
     }
     $due = $due === null ? 1 : (int) $due;
-    $max = $frequency === 'weekly' ? 7 : 31;
+    $max = $frequency === 'weekly' ? 7 : ($frequency === 'weekdays' ? 127 : 31);
     if ($due < 1 || $due > $max) {
-        fail($frequency === 'weekly' ? 'Choose a weekday.' : 'Choose a day of the month (1-31).');
+        fail($frequency === 'monthly' ? 'Choose a day of the month (1-31).' : 'Choose a weekday.');
     }
     return [$frequency, $due];
 }
@@ -505,10 +507,16 @@ function apply_seed(PDO $db, int $version, array $seed): bool
             if (!is_array($s)) {
                 fail('Invalid tasks.');
             }
+            $weekly = stripos((string) ($s['title'] ?? ''), '(Weekly)') !== false;
+            [$frequency, $dueDay] = isset($s['frequency'])
+                ? frequency_params($s)
+                : ($weekly ? ['weekly', 1] : ['daily', null]);
             $rows[] = [
                 'employee' => str_param($s, 'employee', 100),
                 'title' => str_param($s, 'title', 200),
                 'position' => (int) ($s['position'] ?? 0),
+                'frequency' => $frequency,
+                'due_day' => $dueDay,
             ];
         }
 
@@ -532,8 +540,7 @@ function apply_seed(PDO $db, int $version, array $seed): bool
             if (isset($byKey[$key($r)])) {
                 $update->execute([$r['position'], $byKey[$key($r)]['id']]);
             } else {
-                $weekly = stripos($r['title'], '(Weekly)') !== false;
-                $insert->execute([uuid4(), $r['employee'], $r['title'], $r['position'], $weekly ? 'weekly' : 'daily', $weekly ? 1 : null]);
+                $insert->execute([uuid4(), $r['employee'], $r['title'], $r['position'], $r['frequency'], $r['due_day']]);
             }
         }
         $db->prepare("INSERT INTO app_meta (meta_key, meta_value) VALUES ('seed_version', ?)

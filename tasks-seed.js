@@ -1,10 +1,16 @@
 // Default task list for each employee.
 //
-// SEED_VERSION: bump this number whenever you edit the list below. On the next
-// page load the database is rewritten to match this list, instead of staying
-// stuck on the old saved tasks. Tasks whose employee + title are unchanged keep
-// their start/end times; renamed or removed tasks are replaced.
-window.SEED_VERSION = 2;
+// SEED_VERSION: bump this number whenever you edit the list below. The next
+// time the admin signs in, the database is brought in line with this list:
+// new tasks are added, tasks removed from here are deleted, and tasks whose
+// person + title are unchanged keep their history. Tasks added from the
+// dashboard itself are never touched.
+//
+// Each entry is a task title (a daily task), or
+//   { title: "...", days: ["Mon", "Wed", "Fri"] }  for a task on set weekdays
+//     (in Daily Tasks on those days; one day = a weekly task due that day)
+//   { title: "...", frequency: "monthly", due_day: 5 }  for a monthly task
+window.SEED_VERSION = 3;
 
 window.EMPLOYEES = ["Anil", "Madhu", "Manju", "Harsha", "Manju Designer"];
 
@@ -19,54 +25,14 @@ window.DONE_COUNTERS = {
 };
 
 window.SEED_TASKS = {
-  Anil: [
-    "SMM - HAAPS.AI / HAAPS.Digital",
-    "Website Updates",
-    "SM Content",
-    "SEO - HAAPS",
-    "SM - UBM",
-    "Ads - HAAPS, KVA",
-    "GMB - HAAPS",
-    "Reports - UBM",
-  ],
-  Madhu: [
-    "Website Audit (Weekly)",
-    "Website Console & Analytics (Weekly)",
-    "Website Error Fixing",
-    "SMM - HLC, Medfine",
-    "SM Content - HAAPS.AI",
-    "SEO - Sanyra, KVA",
-    "SM - Sanyra, KVA",
-    "Ads - HLC",
-    "GMB - Medfine, KVA",
-    "Reports",
-    "Blogs",
-    "Poster Creation",
-  ],
   Manju: [
-    "SM Content - HAAPS.Digital",
-    "SEO - Medfine, HLC, Mamtha",
-    "SM - ICE, Medfine, Mamtha",
-    "Ads - HLC, Commet, Charu",
-    "GMB - HLC, Sanyra",
-    "Reports",
-    "Blogs - HAAPS, KVA",
-    "Poster Creation",
-  ],
-  Harsha: [
-    "SMM - 3FS",
-    "Doctors Podcast",
-    "Editing Client's Reels",
-    "Promotional Reels",
-    "Insta Reels Content",
-    "AI Reels",
-  ],
-  "Manju Designer": [
-    "Dr. Nandini Video",
-    "Dr. Sachin Video",
-    "Dr. Varun Kumar J Video",
-    "Dr. Neema Bhat Video",
-    "Dr. Mangesh Kamath Video",
-    "Dr. Vishrutha Video",
+    "SEO - MedFine",
+    "SEO - HLC",
+    "SEO - Mamtha",
+    "SEO - Sanyra",
+    "GMB - Dr Mangesh Kamath",
+    "Google Ads - HLC",
+    "Google Ads - Charu",
+    { title: "ICE Social Media – poster creation + posting", days: ["Mon", "Wed", "Fri"] },
   ],
 };

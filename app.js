@@ -50,12 +50,18 @@
     window.addEventListener(type, markActive, { passive: true, capture: true });
   }
 
-  // Flatten SEED_TASKS into rows: { employee, title, position }.
+  // Flatten SEED_TASKS into rows: { employee, title, position, frequency, due_day }.
+  // An entry is a title (a daily task) or { title, days: ["Mon", "Wed"] }
+  // for a task on set weekdays, or { title, frequency, due_day }.
   function seedRows() {
     const rows = [];
-    for (const employee of window.EMPLOYEES) {
-      (window.SEED_TASKS[employee] || []).forEach((title, i) => {
-        rows.push({ employee, title, position: i });
+    for (const employee of Object.keys(window.SEED_TASKS)) {
+      (window.SEED_TASKS[employee] || []).forEach((item, i) => {
+        if (typeof item === "string") return rows.push({ employee, title: item, position: i });
+        const row = { employee, title: item.title, position: i };
+        if (item.days) Object.assign(row, freqFromDays(item.days.map((d) => SHORT_DAYS.indexOf(d.slice(0, 3)) + 1)));
+        else if (item.frequency) Object.assign(row, { frequency: item.frequency, due_day: item.due_day ?? null });
+        rows.push(row);
       });
     }
     return rows;
@@ -73,7 +79,11 @@
   const OVERVIEW = "\u0000overview";
   const TEAM = "\u0000team";
   const REPORTS = "\u0000reports";
-  const FREQ_LABEL = { daily: "Daily", weekly: "Weekly", monthly: "Monthly" };
+  // "weekdays" tasks happen on set days of the week (due_day is a bitmask,
+  // Monday = 1, Tuesday = 2, Wednesday = 4 ... Sunday = 64). On those days
+  // they're part of the daily list; the weekly list shows the whole week.
+  const FREQ_LABEL = { daily: "Daily", weekly: "Weekly", monthly: "Monthly", weekdays: "Set days" };
+  const SHORT_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const VIEWS = [
     { key: "daily", label: "Daily Tasks" },
     { key: "weekly", label: "Weekly Tasks" },
@@ -275,7 +285,28 @@
     return key;
   }
 
+  // Day of the week, Monday = 1 ... Sunday = 7.
+  function isoDay(date) {
+    return ((parseYmd(date).getDay() + 6) % 7) + 1;
+  }
+
+  function maskDays(mask) {
+    return [1, 2, 3, 4, 5, 6, 7].filter((d) => mask & (1 << (d - 1)));
+  }
+
+  // One chosen day = a weekly task due that day; several = set weekdays.
+  function freqFromDays(days) {
+    const list = [...new Set(days)].filter((d) => d >= 1 && d <= 7).sort();
+    if (list.length === 1) return { frequency: "weekly", due_day: list[0] };
+    return { frequency: "weekdays", due_day: list.reduce((m, d) => m | (1 << (d - 1)), 0) };
+  }
+
+  function scheduledOn(task, date) {
+    return task.frequency === "weekdays" && Boolean(task.due_day & (1 << (isoDay(date) - 1)));
+  }
+
   function dueLabel(task) {
+    if (task.frequency === "weekdays") return "Every " + maskDays(task.due_day || 0).map((d) => SHORT_DAYS[d - 1]).join(", ");
     if (task.frequency === "weekly") return "Due " + WEEKDAYS[(task.due_day || 1) - 1];
     if (task.frequency === "monthly") return "Due on the " + ordinal(task.due_day || 1);
     return "";
@@ -425,7 +456,7 @@
         const weekly = /\(Weekly\)/i.test(s.title);
         if (existing) Object.assign(existing, { position: s.position, from_seed: true });
         else
-          state.tasks.push({ ...s, id: newId(), from_seed: true, frequency: weekly ? "weekly" : "daily", due_day: weekly ? 1 : null, created_at: new Date().toISOString() });
+          state.tasks.push({ frequency: weekly ? "weekly" : "daily", due_day: weekly ? 1 : null, ...s, id: newId(), from_seed: true, created_at: new Date().toISOString() });
       }
       window.EMPLOYEES.forEach((name, i) => {
         if (!state.users.some((u) => u.name === name)) state.users.push({ name, password: DEMO.employee, active: true, position: i });
@@ -467,6 +498,7 @@
     function freq(row, current) {
       const frequency = row.frequency || (current && current.frequency) || "daily";
       if (frequency === "daily") return { frequency, due_day: null };
+      if (frequency === "weekdays") return { frequency, due_day: Math.min(Math.max(Number(row.due_day) || 1, 1), 127) };
       const due = Number(row.due_day ?? (current && current.frequency === frequency ? current.due_day : 1)) || 1;
       return { frequency, due_day: Math.min(Math.max(due, 1), frequency === "weekly" ? 7 : 31) };
     }
@@ -855,6 +887,9 @@
     addForm: $("add-form"),
     addInput: $("add-input"),
     addDue: $("add-due"),
+    addDays: $("add-days"),
+    assignDaysField: $("assign-days-field"),
+    assignDays: $("assign-days"),
     banner: $("banner"),
     toast: $("toast"),
     today: $("today"),
@@ -990,7 +1025,8 @@
   async function refresh() {
     if (!me) return;
     const date = selectedDate;
-    const keys = [...new Set([date, weekStart(date), monthStart(date)])];
+    const ws = weekStart(date);
+    const keys = [...new Set([date, ws, monthStart(date), ...[0, 1, 2, 3, 4, 5, 6].map((n) => addDays(ws, n))])];
     const from = pendingWindowStart();
     const rangeFrom = [from, weekStart(from), monthStart(from)].sort()[0];
     let t, e, n, r, rem;
@@ -1028,6 +1064,46 @@
     return tasks.filter((t) => t.employee === name && (!frequency || (t.frequency || "daily") === frequency));
   }
 
+  // What a person's Daily / Weekly / Monthly list shows: set-weekday tasks
+  // are in the daily list on their days, and always in the weekly list.
+  function listFor(name, which, date) {
+    const mine = tasksFor(name);
+    if (which === "daily") return mine.filter((t) => (t.frequency || "daily") === "daily" || scheduledOn(t, date || selectedDate));
+    if (which === "weekly") return mine.filter((t) => t.frequency === "weekly" || t.frequency === "weekdays");
+    return mine.filter((t) => t.frequency === which);
+  }
+
+  // A set-weekday task across the selected week: one entry per scheduled day.
+  function weekOccurrences(task) {
+    const ws = weekStart(selectedDate);
+    // Days before the task existed (or before tracking began) don't count.
+    const from = maxDate(trackingStart, String(task.created_at || "").slice(0, 10) || trackingStart);
+    const days = maskDays(task.due_day || 0).filter((d) => addDays(ws, d - 1) >= from);
+    return days.map((d) => {
+      const date = addDays(ws, d - 1);
+      const e = entries.get(task.id + "|" + date) || recent.get(task.id + "|" + date) || EMPTY_ENTRY;
+      let state = statusOf(e);
+      if (state !== "done" && e.skipped) state = "excused";
+      else if (state !== "done" && date < todayStr) state = "missed";
+      else if (state === "todo" && date === todayStr) state = "today";
+      else if (state === "todo") state = "upcoming";
+      return { date, day: d, entry: e, state };
+    });
+  }
+
+  // Status in a list: in the weekly list a set-weekday task is done when every
+  // one of its days that week is done.
+  function listStatus(task, which) {
+    if (which === "weekly" && task.frequency === "weekdays") {
+      const occ = weekOccurrences(task);
+      const done = occ.filter((o) => o.state === "done" || o.state === "excused").length;
+      if (done === occ.length) return "done";
+      if (occ.some((o) => o.state === "done" || o.state === "in_progress")) return "in_progress";
+      return "todo";
+    }
+    return statusOf(entryFor(task));
+  }
+
   function statusFor(task, date) {
     const e = entryFor(task, date);
     const s = statusOf(e);
@@ -1037,15 +1113,15 @@
     return s;
   }
 
-  function countStatuses(list) {
+  function countStatuses(list, which) {
     const c = { todo: 0, in_progress: 0, done: 0 };
-    list.forEach((t) => c[statusOf(entryFor(t))]++);
+    list.forEach((t) => c[listStatus(t, which)]++);
     return c;
   }
 
-  function finishedMinutes(list) {
+  function finishedMinutes(list, which) {
     return list
-      .map((t) => entryFor(t))
+      .flatMap((t) => (which === "weekly" && t.frequency === "weekdays" ? weekOccurrences(t).map((o) => o.entry) : [entryFor(t)]))
       .filter((e) => e.start_time && e.end_time)
       .reduce((sum, e) => sum + minutesTaken(e, false), 0);
   }
@@ -1073,6 +1149,10 @@
       if (freq === "daily") {
         for (let d = start; d < todayStr; d = addDays(d, 1)) {
           if (WORK_DAYS.includes(parseYmd(d).getDay())) add(task, d, d);
+        }
+      } else if (freq === "weekdays") {
+        for (let d = start; d < todayStr; d = addDays(d, 1)) {
+          if (scheduledOn(task, d)) add(task, d, d);
         }
       } else {
         const step = freq === "weekly" ? (k) => addDays(k, 7) : nextMonth;
@@ -1120,7 +1200,7 @@
   function renderHeaderWidget() {
     el.greeting.textContent = greetingText();
     const people = isAdmin() ? employees : [me.name];
-    const list = people.flatMap((name) => tasksFor(name, "daily"));
+    const list = people.flatMap((name) => listFor(name, "daily"));
     const done = countStatuses(list).done;
     const pct = list.length ? Math.round((done / list.length) * 100) : 0;
     const circumference = 2 * Math.PI * 27;
@@ -1199,7 +1279,7 @@
     el.tabs.replaceChildren(
       tab(OVERVIEW, "Overview", undefined, "tab-admin"),
       ...employees.map((name) => {
-        const list = tasksFor(name, "daily");
+        const list = listFor(name, "daily");
         return tab(name, name, countStatuses(list).done + "/" + list.length, "", pendingFor(name).length || 0);
       }),
       tab(REPORTS, "Reports", undefined, "tab-admin"),
@@ -1211,9 +1291,9 @@
     el.subtabs.hidden = !isPersonTab();
     if (!isPersonTab()) return;
     const counts = {
-      daily: tasksFor(active, "daily"),
-      weekly: tasksFor(active, "weekly"),
-      monthly: tasksFor(active, "monthly"),
+      daily: listFor(active, "daily"),
+      weekly: listFor(active, "weekly"),
+      monthly: listFor(active, "monthly"),
     };
     el.subtabs.replaceChildren(
       ...VIEWS.map(({ key, label }) => {
@@ -1223,7 +1303,7 @@
         btn.setAttribute("aria-selected", String(key === view));
         btn.append(h("span", "", label));
         if (counts[key]) {
-          btn.append(h("span", "tab-count", countStatuses(counts[key]).done + "/" + counts[key].length));
+          btn.append(h("span", "tab-count", countStatuses(counts[key], key).done + "/" + counts[key].length));
         } else if (key === "pending") {
           const n = pendingFor(active).length;
           btn.append(h("span", "tab-count" + (n ? " count-alert" : ""), n));
@@ -1238,9 +1318,9 @@
   }
 
   function renderSummary(list) {
-    const c = countStatuses(list);
+    const c = countStatuses(list, view);
     const totalChip = h("div", "summary-chip summary-total");
-    totalChip.append(h("strong", "", formatDuration(finishedMinutes(list))), h("span", "", "Total Time Taken"));
+    totalChip.append(h("strong", "", formatHours(finishedMinutes(list, view))), h("span", "", "Total Time Taken"));
     el.summary.replaceChildren(
       ...["todo", "in_progress", "done"].map((s) => {
         const chip = h("div", "summary-chip status-" + s);
@@ -1364,6 +1444,40 @@
     return td;
   }
 
+  // Mon-Sun toggle buttons for weekly tasks. One day = due that day;
+  // several = the task happens on each of them.
+  function dayPicker(container, days) {
+    const chosen = new Set(days);
+    const buttons = SHORT_DAYS.map((label, i) => {
+      const b = h("button", "day-chip", label);
+      b.type = "button";
+      b.setAttribute("aria-label", WEEKDAYS[i]);
+      const sync = () => b.setAttribute("aria-pressed", String(chosen.has(i + 1)));
+      sync();
+      b.addEventListener("click", () => {
+        if (chosen.has(i + 1)) chosen.delete(i + 1);
+        else chosen.add(i + 1);
+        sync();
+        hint.textContent = pickerHint();
+      });
+      return b;
+    });
+    const hint = h("span", "day-hint");
+    const pickerHint = () =>
+      chosen.size === 0 ? "Pick at least one day" : chosen.size === 1 ? "Weekly, due " + WEEKDAYS[[...chosen][0] - 1] : "Shows in Daily Tasks on these days";
+    hint.textContent = pickerHint();
+    const row = h("div", "day-chips");
+    row.append(...buttons);
+    container.replaceChildren(row, hint);
+    return () => [...chosen];
+  }
+
+  function taskDays(task) {
+    if (task.frequency === "weekdays") return maskDays(task.due_day || 0);
+    if (task.frequency === "weekly") return [task.due_day || 1];
+    return [1];
+  }
+
   function dueOptions(select, frequency, selected) {
     if (frequency === "weekly") {
       select.replaceChildren(...WEEKDAYS.map((d, i) => option(String(i + 1), d)));
@@ -1399,9 +1513,15 @@
     const due = document.createElement("select");
     const dueCaption = h("span", "", "Due on");
     dueField.append(dueCaption, due);
+    const daysField = h("div", "field");
+    const daysBox = h("div", "day-picker");
+    daysField.append(h("span", "", "Days"), daysBox);
+    let getDays = dayPicker(daysBox, taskDays(task));
+    if (task.frequency === "weekdays") freq.value = "weekly";
     const syncDue = () => {
-      dueField.hidden = freq.value === "daily";
-      if (freq.value !== "daily") dueOptions(due, freq.value, freq.value === task.frequency ? task.due_day : 1);
+      dueField.hidden = freq.value !== "monthly";
+      daysField.hidden = freq.value !== "weekly";
+      if (freq.value === "monthly") dueOptions(due, "monthly", task.frequency === "monthly" ? task.due_day : 1);
     };
     freq.addEventListener("change", syncDue);
     syncDue();
@@ -1421,11 +1541,15 @@
       render();
     });
 
-    form.append(titleField, freqField, dueField, whoField, saveBtn, cancel);
+    form.append(titleField, freqField, dueField, daysField, whoField, saveBtn, cancel);
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const changes = { title: title.value.trim(), frequency: freq.value, employee: who.value };
-      if (freq.value !== "daily") changes.due_day = Number(due.value);
+      if (freq.value === "monthly") changes.due_day = Number(due.value);
+      if (freq.value === "weekly") {
+        if (!getDays().length) return showToast("Pick at least one day.");
+        Object.assign(changes, freqFromDays(getDays()));
+      }
       try {
         await store.updateTask(task.id, changes);
       } catch (err) {
@@ -1476,6 +1600,11 @@
     const colspan = 7 + (countsItems() ? 1 : 0);
     const rows = [];
     list.forEach((task, i) => {
+      if (view === "weekly" && task.frequency === "weekdays") {
+        rows.push(weekdaysRow(task, i, list));
+        if (editingTaskId === task.id) rows.push(editRow(task, colspan));
+        return;
+      }
       const tr = document.createElement("tr");
       const key = occurrenceKey(task, selectedDate);
       const entry = entryFor(task);
@@ -1511,6 +1640,42 @@
     el.empty.hidden = list.length > 0;
     const kind = view === "daily" ? "daily" : view === "weekly" ? "weekly" : "monthly";
     el.empty.textContent = "No " + kind + " tasks yet. Add one below.";
+  }
+
+  // Weekly list: a set-weekday task with one marker per day this week. Its
+  // Start / End happen in Daily Tasks on each of those days.
+  function weekdaysRow(task, i, list) {
+    const tr = h("tr", "weekdays-row");
+    const occ = weekOccurrences(task);
+    const title = h("td", "title");
+    title.append(h("span", "", task.title), h("span", "task-due", dueLabel(task) + " · in Daily Tasks on those days"));
+    const chips = h("div", "occ-chips");
+    const word = { done: "done", in_progress: "in progress", missed: "missed", today: "today", upcoming: "upcoming", excused: "excused" };
+    for (const o of occ) {
+      const c = h("span", "occ-chip occ-" + o.state, SHORT_DAYS[o.day - 1]);
+      c.title = dayDate(o.date) + ": " + word[o.state];
+      chips.append(c);
+    }
+    title.append(chips);
+    const blank = () => {
+      const td = h("td", "time-cell");
+      td.append(h("span", "time-none", "—"));
+      return td;
+    };
+    const done = occ.filter((o) => o.state === "done").length;
+    const st = h("td", "status-cell");
+    const status = listStatus(task, "weekly");
+    const missed = occ.some((o) => o.state === "missed");
+    st.append(h("span", "pill status-" + (status !== "done" && missed ? "overdue" : status), done + " of " + occ.length + " done"));
+    const taken = h("td", "taken-cell");
+    taken.dataset.label = "Taken";
+    const mins = occ.reduce((sum, o) => sum + (o.entry.end_time ? minutesTaken(o.entry, false) || 0 : 0), 0);
+    taken.textContent = mins ? formatHours(mins) : "—";
+    if (!mins) taken.classList.add("taken-none");
+    const actions = h("td", "actions");
+    actions.append(rowTools(task, i, list));
+    tr.append(h("td", "num", i + 1), title, blank(), blank(), st, taken, actions);
+    return tr;
   }
 
   // ---- Pending view ------------------------------------------------------------
@@ -1634,7 +1799,7 @@
     let pendingTotal = 0;
     const pendingBlocks = [];
     const cards = employees.map((name) => {
-      const list = tasksFor(name, "daily");
+      const list = listFor(name, "daily");
       const c = countStatuses(list);
       done += c.done;
       total += list.length;
@@ -1756,11 +1921,14 @@
     }
   }
 
+  let getAssignDays = () => [1];
   function syncAssignDue() {
     const f = el.assignFreq.value;
-    el.assignDueField.hidden = f === "daily";
-    el.assignDueLabel.textContent = f === "weekly" ? "Due on (weekday)" : "Due on (day of month)";
-    if (f !== "daily") dueOptions(el.assignDue, f, 1);
+    el.assignDueField.hidden = f !== "monthly";
+    el.assignDaysField.hidden = f !== "weekly";
+    el.assignDueLabel.textContent = "Due on (day of month)";
+    if (f === "monthly") dueOptions(el.assignDue, f, 1);
+    if (f === "weekly") getAssignDays = dayPicker(el.assignDays, [1]);
   }
   el.assignFreq.addEventListener("change", syncAssignDue);
 
@@ -1914,7 +2082,11 @@
     const frequency = el.assignFreq.value;
     if (!title || !employee) return;
     const row = { employee, title, frequency };
-    if (frequency !== "daily") row.due_day = Number(el.assignDue.value);
+    if (frequency === "monthly") row.due_day = Number(el.assignDue.value);
+    if (frequency === "weekly") {
+      if (!getAssignDays().length) return showToast("Pick at least one day.");
+      Object.assign(row, freqFromDays(getAssignDays()));
+    }
     try {
       await store.insertTask(row);
     } catch (err) {
@@ -1922,7 +2094,7 @@
       return;
     }
     el.assignTitle.value = "";
-    showToast("Assigned “" + title + "” to " + employee + " as a " + FREQ_LABEL[frequency].toLowerCase() + " task");
+    showToast("Assigned “" + title + "” to " + employee + (row.frequency === "weekdays" ? " (" + dueLabel(row).toLowerCase() + ")" : " as a " + FREQ_LABEL[row.frequency].toLowerCase() + " task"));
     refresh();
   });
 
@@ -2449,7 +2621,7 @@
 
     el.pageTitle.textContent = isAdmin() ? "Team SOP Dashboard" : me.name + "’s Tasks";
 
-    const list = person && isTaskView() ? tasksFor(active, view) : [];
+    const list = person && isTaskView() ? listFor(active, view) : [];
     renderDoneCounter(list);
     if (active === OVERVIEW) renderOverview();
     if (active === TEAM) renderTeam();
@@ -2467,13 +2639,17 @@
     if (countsItems()) el.qtyHead.textContent = capitalize(DONE_COUNTERS[active]) + " Done";
     renderRows(list);
     el.addForm.hidden = false;
-    el.addDue.hidden = view === "daily";
-    if (view !== "daily" && el.addDue.dataset.freq !== view) {
+    el.addDue.hidden = view !== "monthly";
+    el.addDays.hidden = view !== "weekly";
+    if (view === "monthly" && el.addDue.dataset.freq !== view) {
       dueOptions(el.addDue, view, 1);
       el.addDue.dataset.freq = view;
     }
+    if (view === "weekly" && !el.addDays.childElementCount) getAddDays = dayPicker(el.addDays, [1]);
     el.addInput.placeholder = isAdmin() ? "Add a " + view + " task for " + active + "…" : "Add a " + view + " task…";
   }
+
+  let getAddDays = () => [1];
 
   el.rows.addEventListener("focusout", () => {
     setTimeout(() => renderPending && render(), 0);
@@ -2550,7 +2726,7 @@
     // Moving within the visible list (e.g. weekly tasks) keeps the other
     // lists' relative order: renumber the whole person's list around it.
     const all = tasksFor(task.employee);
-    const visible = tasksFor(task.employee, task.frequency || "daily");
+    const visible = listFor(task.employee, isTaskView() ? view : task.frequency || "daily");
     const i = visible.findIndex((t) => t.id === task.id);
     const j = i + dir;
     if (i < 0 || j < 0 || j >= visible.length) return;
@@ -2590,7 +2766,11 @@
     const title = el.addInput.value.trim();
     if (!title || !isPersonTab() || !isTaskView()) return;
     const row = { employee: active, title, frequency: view };
-    if (view !== "daily") row.due_day = Number(el.addDue.value);
+    if (view === "monthly") row.due_day = Number(el.addDue.value);
+    if (view === "weekly") {
+      if (!getAddDays().length) return showToast("Pick at least one day.");
+      Object.assign(row, freqFromDays(getAddDays()));
+    }
     el.addInput.value = "";
     try {
       await store.insertTask(row);

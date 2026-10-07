@@ -162,6 +162,10 @@
                 <option value="monthly">Monthly</option>
               </select>
             </label>
+            <div class="field" id="assign-days-field" hidden>
+              <span>Days</span>
+              <div id="assign-days" class="day-picker"></div>
+            </div>
             <label class="field" id="assign-due-field" hidden>
               <span id="assign-due-label">Due on</span>
               <select id="assign-due"></select>
@@ -352,6 +356,7 @@
         <form id="add-form" class="add-form" autocomplete="off" hidden>
           <input id="add-input" type="text" maxlength="200" placeholder="Add a task…" aria-label="New task title" />
           <select id="add-due" aria-label="Due on" hidden></select>
+          <div id="add-days" class="day-picker" hidden></div>
           <button type="submit" class="btn-primary">Add Task</button>
         </form>
       </section>

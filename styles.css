@@ -766,6 +766,32 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
 .pill.status-excused { color: var(--muted); background: var(--surface-2); }
 .dr-more { margin-top: 12px; }
 
+/* ---- Set weekdays: day buttons and weekly markers ---- */
+.day-picker { display: flex; flex-direction: column; gap: 4px; }
+.day-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.day-chip {
+  min-width: 42px; height: 36px; padding: 0 8px; border-radius: 8px;
+  background: var(--bg); color: var(--muted); border: 1px solid var(--border);
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.day-chip:hover { border-color: var(--accent); color: var(--text); }
+.day-chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #0b0e14; }
+.day-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.day-hint { font-size: 12px; color: var(--muted); }
+.add-form .day-picker { flex-direction: row; align-items: center; gap: 8px; }
+.occ-chips { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+.occ-chip {
+  padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 700;
+  border: 1px solid var(--border); color: var(--muted); background: var(--surface-2);
+}
+.occ-done { color: var(--done); background: var(--done-bg); border-color: rgba(34, 197, 94, 0.4); }
+.occ-done::before { content: "\2713  "; }
+.occ-in_progress { color: var(--progress); background: var(--progress-bg); border-color: rgba(245, 158, 11, 0.4); }
+.occ-missed { color: var(--todo); background: var(--todo-bg); border-color: rgba(239, 68, 68, 0.4); }
+.occ-today { color: var(--text); border-color: var(--accent); }
+.occ-excused { text-decoration: line-through; }
+.freq-weekdays { color: #93c5fd; border-color: rgba(147, 197, 253, 0.35); }
+
 /* Phone layout: each task becomes a card. */
 @media (max-width: 720px) {
   .container { padding-top: 20px; }
@@ -806,6 +832,8 @@ input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: 1
   .assign-form .btn-primary { width: 100%; }
   .progress-widget { margin-top: 10px; }
   .dr-kpi strong { font-size: 22px; }
+  .weekdays-row .time-cell { display: none; }
+  .add-form .day-picker { flex-direction: column; align-items: flex-start; }
   .subtabs { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
   .tasks .due-cell, .tasks .late-cell { grid-column: 1 / -1; display: flex; gap: 10px; }
   .tasks .due-cell::before, .tasks .late-cell::before { content: attr(data-label); width: 64px; color: var(--muted); font-size: 13px; font-weight: 400; }
